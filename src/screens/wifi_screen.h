@@ -22,7 +22,8 @@ class WiFiScreen {
 public:
     static WiFiScreen& instance();
 
-    void create(std::function<void(String ssid, String pass)> onConnected);
+    void create(std::function<void(String ssid, String pass)> onConnected,
+                std::function<void()> onCancel = nullptr);
     void destroy();
     void update();   // pump scan / UI state
 
@@ -42,6 +43,7 @@ private:
     std::vector<WiFiNetwork> _networks;
     String _selectedSsid;
     std::function<void(String, String)> _onConnected;
+    std::function<void()> _onCancel;
 
     bool _scanning = false;
     uint32_t _scanStartMs = 0;
@@ -56,5 +58,6 @@ private:
     static void onNetworkTap(lv_event_t *e);
     static void onConnectBtn(lv_event_t *e);
     static void onBackBtn(lv_event_t *e);
+    static void onCancelBtn(lv_event_t *e);
     static void onRescanBtn(lv_event_t *e);
 };

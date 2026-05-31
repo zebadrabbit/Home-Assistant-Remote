@@ -2,8 +2,52 @@
 #include "../ui/theme.h"
 #include "../managers/ha_client.h"
 #include "../managers/wifi_manager.h"
+#include "../managers/storage_manager.h"
 #include "config.h"
 #include <cstdint>
+
+static const char* weatherIconForCondition(const String &condition) {
+    String c = condition;
+    c.toLowerCase();
+
+    if (c.indexOf("thunder") >= 0 || c.indexOf("storm") >= 0 || c.indexOf("lightning") >= 0) {
+        return LV_SYMBOL_CHARGE;
+    }
+    if (c.indexOf("rain") >= 0 || c.indexOf("shower") >= 0 || c.indexOf("drizzle") >= 0) {
+        return LV_SYMBOL_TINT;
+    }
+    if (c.indexOf("snow") >= 0 || c.indexOf("sleet") >= 0 || c.indexOf("hail") >= 0) {
+        return LV_SYMBOL_WARNING;
+    }
+    if (c.indexOf("wind") >= 0 || c.indexOf("breeze") >= 0) {
+        return LV_SYMBOL_LOOP;
+    }
+    if (c.indexOf("cloud") >= 0 || c.indexOf("fog") >= 0 || c.indexOf("overcast") >= 0 || c.indexOf("mist") >= 0) {
+        return LV_SYMBOL_EYE_CLOSE;
+    }
+    if (c.indexOf("sun") >= 0 || c.indexOf("clear") >= 0) {
+        return LV_SYMBOL_EYE_OPEN;
+    }
+
+    return LV_SYMBOL_HOME;
+}
+
+static bool weatherHasWarning(const String &condition) {
+    String c = condition;
+    c.toLowerCase();
+
+    return (c.indexOf("warning") >= 0 ||
+            c.indexOf("alert") >= 0 ||
+            c.indexOf("advisory") >= 0 ||
+            c.indexOf("watch") >= 0 ||
+            c.indexOf("severe") >= 0 ||
+            c.indexOf("emergency") >= 0 ||
+            c.indexOf("tornado") >= 0 ||
+            c.indexOf("hurricane") >= 0 ||
+            c.indexOf("cyclone") >= 0 ||
+            c.indexOf("blizzard") >= 0 ||
+            c.indexOf("flood") >= 0);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 DashboardScreen& DashboardScreen::instance() {
@@ -12,8 +56,10 @@ DashboardScreen& DashboardScreen::instance() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-void DashboardScreen::create(std::function<void()> onSettingsRequested) {
+void DashboardScreen::create(std::function<void()> onSettingsRequested,
+                             std::function<void()> onWifiReconfigureRequested) {
     _onSettings  = onSettingsRequested;
+    _onWifiReconfigure = onWifiReconfigureRequested;
     _lastPollMs  = millis();
 
     _screen = lv_obj_create(nullptr);
@@ -31,6 +77,9 @@ void DashboardScreen::create(std::function<void()> onSettingsRequested) {
     lv_obj_add_style(_lblWifi, &Theme::style_label_dim, 0);
     lv_label_set_text(_lblWifi, LV_SYMBOL_WIFI);
     lv_obj_align(_lblWifi, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_add_flag(_lblWifi, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(_lblWifi, onWifiShortPress, LV_EVENT_SHORT_CLICKED, this);
+    lv_obj_add_event_cb(_lblWifi, onWifiLongPress, LV_EVENT_LONG_PRESSED, this);
 
     lv_obj_t *appName = lv_label_create(_statusBar);
     lv_obj_add_style(appName, &Theme::style_label_dim, 0);
@@ -39,8 +88,10 @@ void DashboardScreen::create(std::function<void()> onSettingsRequested) {
 
     _lblHA = lv_label_create(_statusBar);
     lv_obj_add_style(_lblHA, &Theme::style_label_dim, 0);
-    lv_label_set_text(_lblHA, LV_SYMBOL_HOME);
+    lv_label_set_text(_lblHA, LV_SYMBOL_SETTINGS);
     lv_obj_align(_lblHA, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_flag(_lblHA, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(_lblHA, onSettingsShortPress, LV_EVENT_SHORT_CLICKED, this);
 
     // ── Scrollable tile container ─────────────────────────────────────────────
     _grid = lv_obj_create(_screen);
@@ -97,8 +148,13 @@ void DashboardScreen::buildTile(lv_obj_t *parent, const HAEntity &entity, int id
     if (isPending) {
         lv_obj_set_style_border_color(tile, CLR_WARN, 0);
     }
+    if (entity.domain == "weather") {
+        bool hasWarning = weatherHasWarning(entity.weatherCondition);
+        lv_obj_set_style_border_color(tile, hasWarning ? CLR_ERR : CLR_ACCENT, 0);
+        lv_obj_set_style_border_width(tile, hasWarning ? 3 : 2, 0);
+    }
 
-    if (entity.isControllable) {
+    if (entity.isControllable || entity.domain == "weather") {
         lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
         void *tileIndex = reinterpret_cast<void*>(static_cast<uintptr_t>(idx));
         lv_obj_add_event_cb(tile, onTileTap, LV_EVENT_SHORT_CLICKED,
@@ -111,7 +167,11 @@ void DashboardScreen::buildTile(lv_obj_t *parent, const HAEntity &entity, int id
     lv_obj_t *icon = lv_label_create(tile);
     lv_obj_set_style_text_font(icon, FONT_LG, 0);
     lv_obj_set_style_text_color(icon, isPending ? CLR_WARN : (isUnavailable ? CLR_TEXT_MUTED : (isOn ? CLR_ON : CLR_TEXT_MUTED)), 0);
-    lv_label_set_text(icon, Theme::entityIcon(entity.domain.c_str()));
+    if (entity.domain == "weather") {
+        lv_label_set_text(icon, weatherIconForCondition(entity.weatherCondition));
+    } else {
+        lv_label_set_text(icon, Theme::entityIcon(entity.domain.c_str()));
+    }
     lv_obj_align(icon, LV_ALIGN_TOP_LEFT, 0, 0);
 
     if (entity.domain == "light" && entity.hasColor) {
@@ -132,14 +192,20 @@ void DashboardScreen::buildTile(lv_obj_t *parent, const HAEntity &entity, int id
         (entity.domain == "light" || entity.domain == "switch" || entity.domain == "input_boolean");
     bool hideStateText = hideBinaryState || isUnavailable;
 
+    if (entity.domain == "weather") {
+        hideStateText = false;
+    }
+
     // ── Friendly name ─────────────────────────────────────────────────────────
-    lv_obj_t *name = lv_label_create(tile);
-    lv_obj_set_style_text_font(name, FONT_SM, 0);
-    lv_obj_set_style_text_color(name, isUnavailable ? CLR_TEXT_DIM : CLR_TEXT, 0);
-    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(name, tileW - 16);
-    lv_label_set_text(name, entity.friendlyName.c_str());
-    lv_obj_align(name, LV_ALIGN_BOTTOM_LEFT, 0, hideStateText ? 0 : -14);
+    if (entity.domain != "weather") {
+        lv_obj_t *name = lv_label_create(tile);
+        lv_obj_set_style_text_font(name, FONT_SM, 0);
+        lv_obj_set_style_text_color(name, isUnavailable ? CLR_TEXT_DIM : CLR_TEXT, 0);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(name, tileW - 16);
+        lv_label_set_text(name, entity.friendlyName.c_str());
+        lv_obj_align(name, LV_ALIGN_BOTTOM_LEFT, 0, hideStateText ? 0 : -14);
+    }
 
     // ── State value ──────────────────────────────────────────────────────────
     if (!hideStateText) {
@@ -147,7 +213,16 @@ void DashboardScreen::buildTile(lv_obj_t *parent, const HAEntity &entity, int id
         lv_obj_set_style_text_font(stateLbl, FONT_SM, 0);
         lv_obj_set_style_text_color(stateLbl, CLR_TEXT_DIM, 0);
 
-        if (entity.unit.isEmpty()) {
+        if (entity.domain == "weather") {
+            String stats;
+            if (!entity.weatherTemp.isEmpty()) stats += entity.weatherTemp;
+            if (!entity.weatherHumidity.isEmpty()) {
+                if (!stats.isEmpty()) stats += "\n";
+                stats += entity.weatherHumidity;
+            }
+            if (stats.isEmpty()) stats = entity.state;
+            lv_label_set_text(stateLbl, stats.c_str());
+        } else if (entity.unit.isEmpty()) {
             // Capitalise first letter of state string
             String s = entity.state;
             if (s.length() > 0) s[0] = toupper(s[0]);
@@ -186,13 +261,25 @@ void DashboardScreen::populate(const std::vector<HAEntity> &entities, bool clear
 // ─────────────────────────────────────────────────────────────────────────────
 void DashboardScreen::updateStatusBar(bool haConnected, int32_t rssi) {
     if (_lblWifi) {
-        const char *wifiSym = (rssi > -55) ? LV_SYMBOL_WIFI :
-                              (rssi > -70) ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING;
-        lv_label_set_text(_lblWifi, wifiSym);
-        lv_obj_set_style_text_color(_lblWifi, (rssi > -70) ? CLR_TEXT_DIM : CLR_WARN, 0);
+        int bars = 0;
+        if (rssi > -55) bars = 4;
+        else if (rssi > -65) bars = 3;
+        else if (rssi > -75) bars = 2;
+        else if (rssi > -85) bars = 1;
+
+        const char *strength = "....";
+        lv_color_t color = CLR_ERR;
+        if (bars == 4) { strength = "||||"; color = CLR_OK; }
+        else if (bars == 3) { strength = "|||."; color = CLR_ACCENT; }
+        else if (bars == 2) { strength = "||.."; color = CLR_TEXT_DIM; }
+        else if (bars == 1) { strength = "|..."; color = CLR_WARN; }
+
+        String wifiText = String(LV_SYMBOL_WIFI) + " " + strength;
+        lv_label_set_text(_lblWifi, wifiText.c_str());
+        lv_obj_set_style_text_color(_lblWifi, color, 0);
     }
     if (_lblHA) {
-        lv_label_set_text(_lblHA, LV_SYMBOL_HOME);
+        lv_label_set_text(_lblHA, LV_SYMBOL_SETTINGS);
         lv_obj_set_style_text_color(_lblHA, haConnected ? CLR_OK : CLR_ERR, 0);
     }
 }
@@ -204,6 +291,8 @@ void DashboardScreen::update() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 void DashboardScreen::destroy() {
+    closeWifiInfoPopup();
+    closeWeatherPopup();
     closeLightPopup();
     clearPendingEntities();
     _screen = nullptr;
@@ -221,20 +310,57 @@ void DashboardScreen::onTileTap(lv_event_t *e) {
 
     const auto &en = entities[index];
 
+    if (en.domain == "weather") {
+        DashboardScreen::instance().openWeatherPopup();
+        return;
+    }
+
+    if (!en.isControllable) return;
+
     // Toggle: use "toggle" for switches/lights, "trigger" for scripts/scenes
     String service = "toggle";
     if (en.domain == "scene")  service = "turn_on";
     if (en.domain == "script") service = "turn_on";
 
     DashboardScreen::instance().markEntityPending(en.entityId);
-    HAClient::instance().callService(en.domain, service, en.entityId);
+    bool ok = HAClient::instance().callService(en.domain, service, en.entityId);
+    if (!ok) {
+        DashboardScreen::instance().clearPendingEntities();
+    }
     DashboardScreen::instance().populate(HAClient::instance().entities(), false);
 }
 
 void DashboardScreen::onStatusBarLongPress(lv_event_t *e) {
     DashboardScreen *self = static_cast<DashboardScreen*>(lv_event_get_user_data(e));
+    if (!self) return;
+
+    lv_obj_t *target = lv_event_get_target(e);
+    if (target == self->_lblWifi) return;
+
     self->_suppressTileTapUntilMs = millis() + 700;
     if (self->_onSettings) self->_onSettings();
+}
+
+void DashboardScreen::onSettingsShortPress(lv_event_t *e) {
+    DashboardScreen *self = static_cast<DashboardScreen*>(lv_event_get_user_data(e));
+    if (!self) return;
+    self->_suppressTileTapUntilMs = millis() + 300;
+    if (self->_onSettings) self->_onSettings();
+}
+
+void DashboardScreen::onWifiShortPress(lv_event_t *e) {
+    DashboardScreen *self = static_cast<DashboardScreen*>(lv_event_get_user_data(e));
+    if (!self) return;
+    self->_suppressTileTapUntilMs = millis() + 300;
+    self->openWifiInfoPopup();
+}
+
+void DashboardScreen::onWifiLongPress(lv_event_t *e) {
+    DashboardScreen *self = static_cast<DashboardScreen*>(lv_event_get_user_data(e));
+    if (!self) return;
+    self->_suppressTileTapUntilMs = millis() + 700;
+    self->closeWifiInfoPopup();
+    if (self->_onWifiReconfigure) self->_onWifiReconfigure();
 }
 
 void DashboardScreen::onTileLongPress(lv_event_t *e) {
@@ -368,6 +494,125 @@ void DashboardScreen::closeLightPopup() {
     _selectedLightId = "";
 }
 
+void DashboardScreen::openWeatherPopup() {
+    closeWeatherPopup();
+
+    const HAWeatherData &w = HAClient::instance().weather();
+
+    _weatherPopup = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(_weatherPopup, SCREEN_W - 20, SCREEN_H - 24);
+    lv_obj_center(_weatherPopup);
+    lv_obj_set_style_bg_color(_weatherPopup, CLR_SURFACE, 0);
+    lv_obj_set_style_border_color(_weatherPopup, CLR_ACCENT, 0);
+    lv_obj_set_style_border_width(_weatherPopup, 1, 0);
+    lv_obj_set_style_radius(_weatherPopup, 10, 0);
+    lv_obj_set_style_pad_all(_weatherPopup, 8, 0);
+
+    lv_obj_t *title = lv_label_create(_weatherPopup);
+    lv_obj_set_style_text_font(title, FONT_MD, 0);
+    lv_label_set_text_fmt(title, "%s  Forecast", weatherIconForCondition(w.state));
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t *details = lv_label_create(_weatherPopup);
+    lv_obj_set_style_text_font(details, FONT_SM, 0);
+    lv_obj_set_style_text_color(details, CLR_TEXT, 0);
+    lv_label_set_long_mode(details, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(details, SCREEN_W - 44);
+
+    String lines;
+    if (!w.state.isEmpty()) lines += "Condition: " + w.state + "\n";
+    if (!w.temperature.isEmpty()) lines += "Temperature: " + w.temperature + "\n";
+    if (!w.humidity.isEmpty()) lines += "Humidity: " + w.humidity + "\n";
+    if (!w.apparentTemperature.isEmpty()) lines += "Feels Like: " + w.apparentTemperature + "\n";
+    if (!w.dewPoint.isEmpty()) lines += "Dew Point: " + w.dewPoint + "\n";
+    if (!w.pressure.isEmpty()) lines += "Pressure: " + w.pressure + "\n";
+    if (!w.windSpeed.isEmpty()) lines += "Wind: " + w.windSpeed;
+    if (!w.windBearing.isEmpty()) {
+        if (!w.windSpeed.isEmpty()) lines += " @ ";
+        else lines += "Wind Dir: ";
+        lines += w.windBearing;
+    }
+
+    if (lines.isEmpty()) {
+        lines = "Weather data unavailable.";
+    }
+
+    lv_label_set_text(details, lines.c_str());
+    lv_obj_align_to(details, title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+
+    lv_obj_t *closeBtn = lv_btn_create(_weatherPopup);
+    Theme::applyBtnGhost(closeBtn);
+    lv_obj_set_size(closeBtn, 88, 30);
+    lv_obj_align(closeBtn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_add_event_cb(closeBtn, onCloseWeatherBtn, LV_EVENT_CLICKED, this);
+    lv_obj_t *closeLbl = lv_label_create(closeBtn);
+    lv_label_set_text(closeLbl, "Close");
+    lv_obj_center(closeLbl);
+}
+
+void DashboardScreen::closeWeatherPopup() {
+    if (_weatherPopup) {
+        lv_obj_del(_weatherPopup);
+    }
+    _weatherPopup = nullptr;
+}
+
+void DashboardScreen::openWifiInfoPopup() {
+    closeWifiInfoPopup();
+
+    _wifiPopup = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(_wifiPopup, SCREEN_W - 20, 156);
+    lv_obj_center(_wifiPopup);
+    lv_obj_set_style_bg_color(_wifiPopup, CLR_SURFACE, 0);
+    lv_obj_set_style_border_color(_wifiPopup, CLR_ACCENT, 0);
+    lv_obj_set_style_border_width(_wifiPopup, 1, 0);
+    lv_obj_set_style_radius(_wifiPopup, 10, 0);
+    lv_obj_set_style_pad_all(_wifiPopup, 8, 0);
+
+    lv_obj_t *title = lv_label_create(_wifiPopup);
+    lv_obj_set_style_text_font(title, FONT_MD, 0);
+    lv_label_set_text(title, LV_SYMBOL_WIFI "  WiFi Info");
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    String ssid = StorageManager::instance().getSSID();
+    if (ssid.isEmpty()) ssid = "(unknown)";
+
+    String status = WiFiMgr::instance().isConnected() ? "Connected" : "Disconnected";
+    String ip = WiFiMgr::instance().isConnected() ? WiFiMgr::instance().localIP() : "-";
+    String mac = WiFiMgr::instance().macAddress();
+    String rssi = WiFiMgr::instance().isConnected() ? (String(WiFiMgr::instance().rssi()) + " dBm") : "-";
+
+    lv_obj_t *details = lv_label_create(_wifiPopup);
+    lv_obj_set_style_text_font(details, FONT_SM, 0);
+    lv_obj_set_style_text_color(details, CLR_TEXT, 0);
+    lv_label_set_long_mode(details, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(details, SCREEN_W - 44);
+    lv_label_set_text_fmt(details,
+                          "Status: %s\nSSID: %s\nIP: %s\nRSSI: %s\nMAC: %s",
+                          status.c_str(),
+                          ssid.c_str(),
+                          ip.c_str(),
+                          rssi.c_str(),
+                          mac.c_str());
+    lv_obj_align_to(details, title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+
+    lv_obj_t *closeBtn = lv_btn_create(_wifiPopup);
+    Theme::applyBtnGhost(closeBtn);
+    lv_obj_set_size(closeBtn, 88, 30);
+    lv_obj_align(closeBtn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_add_event_cb(closeBtn, onCloseWifiBtn, LV_EVENT_CLICKED, this);
+    lv_obj_t *closeLbl = lv_label_create(closeBtn);
+    lv_label_set_text(closeLbl, "Close");
+    lv_obj_center(closeLbl);
+}
+
+void DashboardScreen::closeWifiInfoPopup() {
+    if (_wifiPopup) {
+        lv_obj_del(_wifiPopup);
+    }
+    _wifiPopup = nullptr;
+}
+
 void DashboardScreen::updateLightPopupModeUi() {
     if (_lblMode) {
         if (_useKelvin) {
@@ -491,6 +736,18 @@ void DashboardScreen::onCancelBtn(lv_event_t *e) {
     DashboardScreen *self = static_cast<DashboardScreen*>(lv_event_get_user_data(e));
     if (!self) return;
     self->closeLightPopup();
+}
+
+void DashboardScreen::onCloseWeatherBtn(lv_event_t *e) {
+    DashboardScreen *self = static_cast<DashboardScreen*>(lv_event_get_user_data(e));
+    if (!self) return;
+    self->closeWeatherPopup();
+}
+
+void DashboardScreen::onCloseWifiBtn(lv_event_t *e) {
+    DashboardScreen *self = static_cast<DashboardScreen*>(lv_event_get_user_data(e));
+    if (!self) return;
+    self->closeWifiInfoPopup();
 }
 
 void DashboardScreen::onBrightnessChanged(lv_event_t *e) {

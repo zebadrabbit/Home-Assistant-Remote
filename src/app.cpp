@@ -454,9 +454,18 @@ void App::enterCheckConfig() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 void App::enterWifiSetup() {
+    std::function<void()> onCancel = nullptr;
+    if (_wifiSetupCanCancelToDashboard) {
+        onCancel = [this]() {
+            _wifiSetupCanCancelToDashboard = false;
+            requestTransition(AppState::DASHBOARD);
+        };
+    }
+
     WiFiScreen::instance().create([this](String ssid, String pass) {
+        _wifiSetupCanCancelToDashboard = false;
         enterWifiConnect(ssid, pass);
-    });
+    }, onCancel);
 }
 
 void App::enterWifiConnect(const String &ssid, const String &pass) {
@@ -574,6 +583,9 @@ void App::enterDashboard() {
     disableIdleMode();
     DashboardScreen::instance().create([this]() {
         requestTransition(AppState::SETTINGS);
+    }, [this]() {
+        _wifiSetupCanCancelToDashboard = true;
+        requestTransition(AppState::WIFI_SETUP);
     });
     DashboardScreen::instance().populate(HAClient::instance().entities());
     DashboardScreen::instance().updateStatusBar(true, WiFiMgr::instance().rssi());
@@ -581,91 +593,239 @@ void App::enterDashboard() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 void App::enterSettings() {
-    // Simple modal dialog over the dashboard
     _settingsOpenedMs = millis();
 
     auto &storage = StorageManager::instance();
-    String ssid = storage.getSSID();
-    String haUrl = storage.getHAUrl();
-    String token = storage.getHAToken();
     uint32_t refreshMs = storage.getRefreshIntervalMs();
     uint8_t filterMode = storage.getEntityFilterMode();
     uint8_t rotation = storage.getDisplayRotation();
     uint8_t theme = storage.getThemePreset();
 
-    const char *filterName = "Lights + Outlets";
-    if (filterMode == 1) filterName = "Lights only";
+    static const uint32_t refreshOptionsMs[] = {5000, 10000, 15000, 30000, 60000};
+    uint8_t refreshIndex = 1;
+    for (uint8_t i = 0; i < 5; i++) {
+        if (refreshMs == refreshOptionsMs[i]) {
+            refreshIndex = i;
+            break;
+        }
+    }
+
+    struct SettingsUiCtx {
+        App *app;
+        lv_obj_t *overlay;
+        lv_obj_t *ddRotation;
+        lv_obj_t *ddTheme;
+        lv_obj_t *ddRefresh;
+        lv_obj_t *ddFilter;
+    };
 
     lv_obj_t *overlay = lv_obj_create(lv_scr_act());
     lv_obj_set_size(overlay, SCREEN_W, SCREEN_H);
     lv_obj_set_style_bg_color(overlay, CLR_BG, 0);
-    lv_obj_set_style_bg_opa(overlay, 200, 0);
+    lv_obj_set_style_bg_opa(overlay, 220, 0);
     lv_obj_center(overlay);
 
     lv_obj_t *card = lv_obj_create(overlay);
     lv_obj_add_style(card, &Theme::style_card, 0);
-    lv_obj_set_size(card, 300, 210);
+    lv_obj_set_size(card, SCREEN_W - 12, SCREEN_H - 12);
     lv_obj_center(card);
 
     lv_obj_t *title = lv_label_create(card);
     lv_obj_add_style(title, &Theme::style_label_body, 0);
     lv_label_set_text(title, LV_SYMBOL_SETTINGS "  Settings");
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    lv_obj_t *configLbl = lv_label_create(card);
-    lv_obj_add_style(configLbl, &Theme::style_label_dim, 0);
-    lv_label_set_long_mode(configLbl, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(configLbl, 272);
-    lv_label_set_text_fmt(
-        configLbl,
-        "SSID: %s\n"
-        "HA URL: %s\n"
-        "Token: %s\n"
-        "Refresh: %lus\n"
-        "Filter: %s\n"
-        "Rotation: %u\n"
-        "Theme: %u",
-        ssid.length() ? ssid.c_str() : "(not set)",
-        haUrl.length() ? haUrl.c_str() : "(not set)",
-        token.length() ? "configured" : "(not set)",
-        static_cast<unsigned long>(refreshMs / 1000UL),
-        filterName,
-        static_cast<unsigned>(rotation),
-        static_cast<unsigned>(theme)
-    );
-    lv_obj_align(configLbl, LV_ALIGN_TOP_LEFT, 8, 26);
+    lv_obj_t *hint = lv_label_create(card);
+    lv_obj_add_style(hint, &Theme::style_label_dim, 0);
+    lv_label_set_text(hint, "Grouped editor");
+    lv_obj_align_to(hint, title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 2);
 
-    lv_obj_t *resetBtn = lv_btn_create(card);
-    lv_obj_add_style(resetBtn, &Theme::style_btn_primary, 0);
-    lv_obj_set_size(resetBtn, 130, 34);
-    lv_obj_align(resetBtn, LV_ALIGN_BOTTOM_LEFT, 8, -8);
-    lv_obj_add_event_cb(resetBtn, [](lv_event_t *e) {
-        App *self = static_cast<App*>(lv_event_get_user_data(e));
-        if (millis() - self->_settingsOpenedMs < 500) return;
-        StorageManager::instance().clear();
-        WiFiMgr::instance().disconnect();
-        esp_restart();
-    }, LV_EVENT_CLICKED, this);
+    lv_obj_t *content = lv_obj_create(card);
+    lv_obj_set_size(content, SCREEN_W - 32, SCREEN_H - 96);
+    lv_obj_align(content, LV_ALIGN_TOP_MID, 0, 36);
+    lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(content, 0, 0);
+    lv_obj_set_style_pad_all(content, 0, 0);
+    lv_obj_set_style_pad_gap(content, 6, 0);
+    lv_obj_set_scroll_dir(content, LV_DIR_VER);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    auto makeSection = [&](const char *name) {
+        lv_obj_t *section = lv_obj_create(content);
+        lv_obj_set_width(section, lv_pct(100));
+        lv_obj_set_height(section, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(section, CLR_SURFACE2, 0);
+        lv_obj_set_style_border_color(section, CLR_BORDER, 0);
+        lv_obj_set_style_border_width(section, 1, 0);
+        lv_obj_set_style_radius(section, 8, 0);
+        lv_obj_set_style_pad_all(section, 6, 0);
+        lv_obj_set_style_pad_gap(section, 4, 0);
+        lv_obj_set_flex_flow(section, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(section, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+        lv_obj_t *label = lv_label_create(section);
+        lv_obj_add_style(label, &Theme::style_label_dim, 0);
+        lv_label_set_text(label, name);
+        return section;
+    };
+
+    lv_obj_t *displaySec = makeSection("Display");
+    lv_obj_t *rotLbl = lv_label_create(displaySec);
+    lv_obj_add_style(rotLbl, &Theme::style_label_dim, 0);
+    lv_label_set_text(rotLbl, "Rotation");
+    lv_obj_t *ddRotation = lv_dropdown_create(displaySec);
+    lv_dropdown_set_options(ddRotation, "Landscape 0\nPortrait 0\nLandscape 1\nPortrait 1");
+    lv_dropdown_set_selected(ddRotation, rotation % 4);
+    lv_obj_set_width(ddRotation, 180);
+
+    lv_obj_t *themeLbl = lv_label_create(displaySec);
+    lv_obj_add_style(themeLbl, &Theme::style_label_dim, 0);
+    lv_label_set_text(themeLbl, "Theme");
+    lv_obj_t *ddTheme = lv_dropdown_create(displaySec);
+    lv_dropdown_set_options(ddTheme, "Dark\nDim Dark");
+    lv_dropdown_set_selected(ddTheme, theme <= 1 ? theme : 0);
+    lv_obj_set_width(ddTheme, 180);
+
+    lv_obj_t *dashSec = makeSection("Dashboard");
+    lv_obj_t *refreshLbl = lv_label_create(dashSec);
+    lv_obj_add_style(refreshLbl, &Theme::style_label_dim, 0);
+    lv_label_set_text(refreshLbl, "Refresh Interval");
+    lv_obj_t *ddRefresh = lv_dropdown_create(dashSec);
+    lv_dropdown_set_options(ddRefresh, "5 sec\n10 sec\n15 sec\n30 sec\n60 sec");
+    lv_dropdown_set_selected(ddRefresh, refreshIndex);
+    lv_obj_set_width(ddRefresh, 180);
+
+    lv_obj_t *filterLbl = lv_label_create(dashSec);
+    lv_obj_add_style(filterLbl, &Theme::style_label_dim, 0);
+    lv_label_set_text(filterLbl, "Entity Filter");
+    lv_obj_t *ddFilter = lv_dropdown_create(dashSec);
+    lv_dropdown_set_options(ddFilter, "Lights + Outlets\nLights only");
+    lv_dropdown_set_selected(ddFilter, filterMode == 1 ? 1 : 0);
+    lv_obj_set_width(ddFilter, 180);
+
+    lv_obj_t *connSec = makeSection("Connections");
+    lv_obj_t *connRow = lv_obj_create(connSec);
+    lv_obj_set_width(connRow, lv_pct(100));
+    lv_obj_set_height(connRow, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(connRow, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(connRow, 0, 0);
+    lv_obj_set_style_pad_all(connRow, 0, 0);
+    lv_obj_set_style_pad_gap(connRow, 8, 0);
+    lv_obj_set_flex_flow(connRow, LV_FLEX_FLOW_ROW_WRAP);
+
+    lv_obj_t *wifiBtn = lv_btn_create(connRow);
+    Theme::applyBtnGhost(wifiBtn);
+    lv_obj_set_size(wifiBtn, 118, 32);
+    lv_obj_t *wifiLbl = lv_label_create(wifiBtn);
+    lv_label_set_text(wifiLbl, "WiFi AP");
+    lv_obj_center(wifiLbl);
+
+    lv_obj_t *haBtn = lv_btn_create(connRow);
+    Theme::applyBtnGhost(haBtn);
+    lv_obj_set_size(haBtn, 118, 32);
+    lv_obj_t *haLbl = lv_label_create(haBtn);
+    lv_label_set_text(haLbl, "HA Setup");
+    lv_obj_center(haLbl);
+
+    lv_obj_t *sysSec = makeSection("System");
+    lv_obj_t *resetBtn = lv_btn_create(sysSec);
+    Theme::applyBtnPrimary(resetBtn);
+    lv_obj_set_size(resetBtn, 140, 32);
     lv_obj_t *resetLbl = lv_label_create(resetBtn);
     lv_label_set_text(resetLbl, "Factory Reset");
     lv_obj_center(resetLbl);
 
-    lv_obj_t *cancelBtn = lv_btn_create(card);
-    Theme::applyBtnGhost(cancelBtn);
-    lv_obj_set_size(cancelBtn, 130, 34);
-    lv_obj_align(cancelBtn, LV_ALIGN_BOTTOM_RIGHT, -8, -8);
-    lv_obj_add_event_cb(cancelBtn, [](lv_event_t *e) {
-        App *self = static_cast<App*>(lv_event_get_user_data(e));
-        if (millis() - self->_settingsOpenedMs < 500) return;
+    lv_obj_t *closeBtn = lv_btn_create(card);
+    Theme::applyBtnGhost(closeBtn);
+    lv_obj_set_size(closeBtn, 96, 32);
+    lv_obj_align(closeBtn, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_t *closeLbl = lv_label_create(closeBtn);
+    lv_label_set_text(closeLbl, "Close");
+    lv_obj_center(closeLbl);
 
-        lv_obj_t *btn = lv_event_get_target(e);
-        lv_obj_t *card = lv_obj_get_parent(btn);
-        lv_obj_t *ov = lv_obj_get_parent(card);
-        lv_obj_del(ov);
-    }, LV_EVENT_CLICKED, this);
-    lv_obj_t *cancelLbl = lv_label_create(cancelBtn);
-    lv_label_set_text(cancelLbl, "Cancel");
-    lv_obj_center(cancelLbl);
+    lv_obj_t *saveBtn = lv_btn_create(card);
+    Theme::applyBtnPrimary(saveBtn);
+    lv_obj_set_size(saveBtn, 110, 32);
+    lv_obj_align(saveBtn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_t *saveLbl = lv_label_create(saveBtn);
+    lv_label_set_text(saveLbl, "Save");
+    lv_obj_center(saveLbl);
 
-    _state = AppState::DASHBOARD;  // stay on dashboard after dialog
+    auto *ctx = new SettingsUiCtx{this, overlay, ddRotation, ddTheme, ddRefresh, ddFilter};
+
+    lv_obj_add_event_cb(saveBtn, [](lv_event_t *e) {
+        SettingsUiCtx *ctx = static_cast<SettingsUiCtx*>(lv_event_get_user_data(e));
+        if (!ctx || millis() - ctx->app->_settingsOpenedMs < 300) return;
+
+        auto &storage = StorageManager::instance();
+        uint8_t newRotation = static_cast<uint8_t>(lv_dropdown_get_selected(ctx->ddRotation));
+        uint8_t newTheme = static_cast<uint8_t>(lv_dropdown_get_selected(ctx->ddTheme));
+        uint8_t refreshIdx = static_cast<uint8_t>(lv_dropdown_get_selected(ctx->ddRefresh));
+        uint8_t filterIdx = static_cast<uint8_t>(lv_dropdown_get_selected(ctx->ddFilter));
+        if (refreshIdx > 4) refreshIdx = 1;
+
+        static const uint32_t refreshValues[] = {5000, 10000, 15000, 30000, 60000};
+        uint32_t newRefreshMs = refreshValues[refreshIdx];
+        uint8_t newFilter = (filterIdx == 1) ? 1 : 0;
+
+        uint8_t oldRotation = storage.getDisplayRotation();
+        uint8_t oldTheme = storage.getThemePreset();
+
+        storage.setDisplayRotation(newRotation);
+        storage.setThemePreset(newTheme);
+        storage.setRefreshIntervalMs(newRefreshMs);
+        storage.setEntityFilterMode(newFilter);
+
+        ctx->app->_entityPollIntervalMs = newRefreshMs;
+        ctx->app->_lastEntityPollMs = millis();
+        HAClient::instance().setEntityFilterMode(newFilter);
+        if (HAClient::instance().fetchEntities()) {
+            DashboardScreen::instance().populate(HAClient::instance().entities());
+            DashboardScreen::instance().updateStatusBar(true, WiFiMgr::instance().rssi());
+        }
+
+        bool needsRestart = (newRotation != oldRotation) || (newTheme != oldTheme);
+        lv_obj_del(ctx->overlay);
+        delete ctx;
+        if (needsRestart) {
+            esp_restart();
+        }
+    }, LV_EVENT_CLICKED, ctx);
+
+    lv_obj_add_event_cb(closeBtn, [](lv_event_t *e) {
+        SettingsUiCtx *ctx = static_cast<SettingsUiCtx*>(lv_event_get_user_data(e));
+        if (!ctx || millis() - ctx->app->_settingsOpenedMs < 300) return;
+        lv_obj_del(ctx->overlay);
+        delete ctx;
+    }, LV_EVENT_CLICKED, ctx);
+
+    lv_obj_add_event_cb(wifiBtn, [](lv_event_t *e) {
+        SettingsUiCtx *ctx = static_cast<SettingsUiCtx*>(lv_event_get_user_data(e));
+        if (!ctx || millis() - ctx->app->_settingsOpenedMs < 300) return;
+        lv_obj_del(ctx->overlay);
+        ctx->app->_wifiSetupCanCancelToDashboard = true;
+        ctx->app->requestTransition(AppState::WIFI_SETUP);
+        delete ctx;
+    }, LV_EVENT_CLICKED, ctx);
+
+    lv_obj_add_event_cb(haBtn, [](lv_event_t *e) {
+        SettingsUiCtx *ctx = static_cast<SettingsUiCtx*>(lv_event_get_user_data(e));
+        if (!ctx || millis() - ctx->app->_settingsOpenedMs < 300) return;
+        lv_obj_del(ctx->overlay);
+        ctx->app->requestTransition(AppState::HA_SETUP);
+        delete ctx;
+    }, LV_EVENT_CLICKED, ctx);
+
+    lv_obj_add_event_cb(resetBtn, [](lv_event_t *e) {
+        SettingsUiCtx *ctx = static_cast<SettingsUiCtx*>(lv_event_get_user_data(e));
+        if (!ctx || millis() - ctx->app->_settingsOpenedMs < 300) return;
+        StorageManager::instance().clear();
+        WiFiMgr::instance().disconnect();
+        lv_obj_del(ctx->overlay);
+        delete ctx;
+        esp_restart();
+    }, LV_EVENT_CLICKED, ctx);
+
+    _state = AppState::DASHBOARD;
 }

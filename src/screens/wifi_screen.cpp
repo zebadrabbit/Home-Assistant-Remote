@@ -11,8 +11,10 @@ WiFiScreen& WiFiScreen::instance() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-void WiFiScreen::create(std::function<void(String, String)> onConnected) {
+void WiFiScreen::create(std::function<void(String, String)> onConnected,
+                        std::function<void()> onCancel) {
     _onConnected = onConnected;
+    _onCancel = onCancel;
 
     _screen = lv_obj_create(nullptr);
     lv_obj_add_style(_screen, &Theme::style_screen, 0);
@@ -35,8 +37,19 @@ void WiFiScreen::showNetworkList() {
 
     lv_obj_t *hdrLbl = lv_label_create(hdr);
     lv_obj_add_style(hdrLbl, &Theme::style_label_body, 0);
-    lv_label_set_text(hdrLbl, LV_SYMBOL_WIFI "  Select Network");
-    lv_obj_align(hdrLbl, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_label_set_text(hdrLbl, "Networks");
+    lv_obj_align(hdrLbl, LV_ALIGN_CENTER, 0, 0);
+
+    if (_onCancel) {
+        lv_obj_t *backBtn = lv_btn_create(hdr);
+        Theme::applyBtnGhost(backBtn);
+        lv_obj_set_size(backBtn, 70, 26);
+        lv_obj_align(backBtn, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_add_event_cb(backBtn, onCancelBtn, LV_EVENT_CLICKED, this);
+        lv_obj_t *backLbl = lv_label_create(backBtn);
+        lv_label_set_text(backLbl, LV_SYMBOL_LEFT " Back");
+        lv_obj_center(backLbl);
+    }
 
     // Rescan button
     lv_obj_t *rescanBtn = lv_btn_create(hdr);
@@ -154,12 +167,9 @@ void WiFiScreen::populateList() {
     }
 
     for (auto &net : _networks) {
-        // RSSI → bar indicator
-        const char *bar = (net.rssi > -55) ? LV_SYMBOL_WIFI :
-                          (net.rssi > -70) ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING;
         char label[64];
-        snprintf(label, sizeof(label), "%s  %s%s",
-                 bar, net.ssid.c_str(), net.isOpen ? "" : " " LV_SYMBOL_SETTINGS);
+        snprintf(label, sizeof(label), "%s%s",
+                 net.ssid.c_str(), net.isOpen ? "" : " " LV_SYMBOL_SETTINGS);
 
         lv_obj_t *btn = lv_list_add_btn(_list, nullptr, label);
         lv_obj_set_style_bg_color(btn, CLR_SURFACE, 0);
@@ -249,4 +259,10 @@ void WiFiScreen::onBackBtn(lv_event_t *e) {
 void WiFiScreen::onRescanBtn(lv_event_t *e) {
     WiFiScreen *self = static_cast<WiFiScreen*>(lv_event_get_user_data(e));
     self->startScan();
+}
+
+void WiFiScreen::onCancelBtn(lv_event_t *e) {
+    WiFiScreen *self = static_cast<WiFiScreen*>(lv_event_get_user_data(e));
+    if (!self) return;
+    if (self->_onCancel) self->_onCancel();
 }

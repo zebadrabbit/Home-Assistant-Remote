@@ -27,7 +27,8 @@ class DashboardScreen {
 public:
     static DashboardScreen& instance();
 
-    void create(std::function<void()> onSettingsRequested);
+    void create(std::function<void()> onSettingsRequested,
+                std::function<void()> onWifiReconfigureRequested = nullptr);
     void destroy();
 
     /** Rebuild the tile grid from the current HAClient entity list. */
@@ -48,6 +49,8 @@ private:
     lv_obj_t *_lblHA      = nullptr;
     lv_obj_t *_grid       = nullptr;   // scrollable container for tiles
     lv_obj_t *_lightPopup = nullptr;
+    lv_obj_t *_weatherPopup = nullptr;
+    lv_obj_t *_wifiPopup = nullptr;
     lv_obj_t *_sliderBrightness = nullptr;
     lv_obj_t *_sliderKelvin = nullptr;
     lv_obj_t *_colorWheel = nullptr;
@@ -72,6 +75,7 @@ private:
     std::vector<String> _pendingEntityIds;
 
     std::function<void()> _onSettings;
+    std::function<void()> _onWifiReconfigure;
 
     uint32_t _lastPollMs = 0;
 
@@ -82,17 +86,26 @@ private:
     void clearPendingEntities();
     void openLightPopup(const HAEntity &entity);
     void closeLightPopup();
+    void openWeatherPopup();
+    void closeWeatherPopup();
+    void openWifiInfoPopup();
+    void closeWifiInfoPopup();
     void applyLightPopup();
     void updateLightPopupModeUi();
 
     // ── LVGL callbacks ───────────────────────────────────────────────────────
     static void onTileTap(lv_event_t *e);
     static void onTileLongPress(lv_event_t *e);
+    static void onSettingsShortPress(lv_event_t *e);
     static void onStatusBarLongPress(lv_event_t *e);
+    static void onWifiShortPress(lv_event_t *e);
+    static void onWifiLongPress(lv_event_t *e);
     static void onColorModeBtn(lv_event_t *e);
     static void onWhiteModeBtn(lv_event_t *e);
     static void onApplyBtn(lv_event_t *e);
     static void onCancelBtn(lv_event_t *e);
+    static void onCloseWeatherBtn(lv_event_t *e);
+    static void onCloseWifiBtn(lv_event_t *e);
     static void onBrightnessChanged(lv_event_t *e);
     static void onKelvinChanged(lv_event_t *e);
     static void onColorWheelChanged(lv_event_t *e);

@@ -101,4 +101,5 @@ private:
     // ── Pending WiFi credentials (held between screens) ───────────────────────
     String _pendingSSID;
     String _pendingPass;
+    bool _wifiSetupCanCancelToDashboard = false;
 };

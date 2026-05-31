@@ -23,6 +23,23 @@ struct HAEntity {
     bool   hasKelvin = false;
     uint16_t kelvin = 0;
     bool   colorModeIsWhite = false;
+    String weatherCondition;
+    String weatherTemp;
+    String weatherHumidity;
+};
+
+struct HAWeatherData {
+    bool available = false;
+    String entityId;
+    String friendlyName;
+    String state;
+    String temperature;
+    String humidity;
+    String pressure;
+    String windSpeed;
+    String windBearing;
+    String apparentTemperature;
+    String dewPoint;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -46,6 +63,7 @@ public:
      */
     bool fetchEntities();
     const std::vector<HAEntity>& entities() const { return _entities; }
+    const HAWeatherData& weather() const { return _weather; }
     void setEntityFilterMode(uint8_t mode) { _entityFilterMode = mode; }
 
     // ── Service call ─────────────────────────────────────────────────────────
@@ -68,6 +86,7 @@ private:
     String _token;
     String _lastError;
     std::vector<HAEntity> _entities;
+    HAWeatherData _weather;
     uint8_t _entityFilterMode = DEFAULT_ENTITY_FILTER_MODE;
 
     String  buildUrl(const String &path) const;

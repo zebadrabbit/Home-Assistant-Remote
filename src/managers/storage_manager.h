@@ -41,6 +41,12 @@ public:
     uint8_t getEntityFilterMode() const;
     void    setEntityFilterMode(uint8_t mode);
 
+    uint32_t getIdleTimeoutMs() const;
+    void     setIdleTimeoutMs(uint32_t timeoutMs);
+
+    String getHiddenEntityIds() const;
+    void   setHiddenEntityIds(const String &ids);
+
     // ── Convenience ──────────────────────────────────────────────────────────
     /** Returns true when both WiFi and HA credentials are present. */
     bool    isFullyConfigured() const;

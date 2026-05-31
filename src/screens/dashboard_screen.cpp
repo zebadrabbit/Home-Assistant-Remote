@@ -55,15 +55,59 @@ DashboardScreen& DashboardScreen::instance() {
     return s;
 }
 
+bool DashboardScreen::isEntityHidden(const String &entityId) const {
+    for (const auto &id : _hiddenEntityIds) {
+        if (id == entityId) return true;
+    }
+    return false;
+}
+
+void DashboardScreen::loadHiddenEntities() {
+    _hiddenEntityIds.clear();
+    String packed = StorageManager::instance().getHiddenEntityIds();
+    if (packed.isEmpty()) return;
+
+    int start = 0;
+    while (start < packed.length()) {
+        int sep = packed.indexOf('\n', start);
+        if (sep < 0) sep = packed.length();
+        String token = packed.substring(start, sep);
+        token.trim();
+        if (!token.isEmpty()) _hiddenEntityIds.push_back(token);
+        start = sep + 1;
+    }
+}
+
+void DashboardScreen::saveHiddenEntities() const {
+    String packed;
+    for (size_t i = 0; i < _hiddenEntityIds.size(); i++) {
+        packed += _hiddenEntityIds[i];
+        if (i + 1 < _hiddenEntityIds.size()) packed += "\n";
+    }
+    StorageManager::instance().setHiddenEntityIds(packed);
+}
+
+void DashboardScreen::hideEntity(const String &entityId) {
+    if (entityId.isEmpty() || isEntityHidden(entityId)) return;
+    _hiddenEntityIds.push_back(entityId);
+    saveHiddenEntities();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 void DashboardScreen::create(std::function<void()> onSettingsRequested,
                              std::function<void()> onWifiReconfigureRequested) {
     _onSettings  = onSettingsRequested;
     _onWifiReconfigure = onWifiReconfigureRequested;
     _lastPollMs  = millis();
+    loadHiddenEntities();
 
     _screen = lv_obj_create(nullptr);
     lv_obj_add_style(_screen, &Theme::style_screen, 0);
+    _tickerQueue.clear();
+    _tickerIndex = 0;
+    _lastTickerStepMs = millis();
+    _lastTickerMessageMs = _lastTickerStepMs;
+    _tickerCollapsed = false;
 
     // ── Status bar ───────────────────────────────────────────────────────────
     _statusBar = lv_obj_create(_screen);
@@ -93,10 +137,33 @@ void DashboardScreen::create(std::function<void()> onSettingsRequested,
     lv_obj_add_flag(_lblHA, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(_lblHA, onSettingsShortPress, LV_EVENT_SHORT_CLICKED, this);
 
+    _lblBattery = lv_label_create(_statusBar);
+    lv_obj_add_style(_lblBattery, &Theme::style_label_dim, 0);
+    lv_label_set_long_mode(_lblBattery, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(_lblBattery, 26);
+    lv_label_set_text(_lblBattery, "");
+    lv_obj_align_to(_lblBattery, _lblHA, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+
+    _tickerBar = lv_obj_create(_screen);
+    lv_obj_add_style(_tickerBar, &Theme::style_status_bar, 0);
+    lv_obj_set_size(_tickerBar, SCREEN_W, DASH_TICKER_H);
+    lv_obj_align(_tickerBar, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_pad_hor(_tickerBar, 6, 0);
+    lv_obj_set_style_pad_ver(_tickerBar, 2, 0);
+    lv_obj_add_flag(_tickerBar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(_tickerBar, onTickerTap, LV_EVENT_SHORT_CLICKED, this);
+
+    _lblTicker = lv_label_create(_tickerBar);
+    lv_obj_add_style(_lblTicker, &Theme::style_label_dim, 0);
+    lv_obj_set_width(_lblTicker, SCREEN_W - 12);
+    lv_label_set_long_mode(_lblTicker, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_label_set_text(_lblTicker, "No recent updates");
+    lv_obj_align(_lblTicker, LV_ALIGN_LEFT_MID, 0, 0);
+
     // ── Scrollable tile container ─────────────────────────────────────────────
     _grid = lv_obj_create(_screen);
-    lv_obj_set_size(_grid, SCREEN_W, SCREEN_H - DASH_STATUS_BAR_H);
-    lv_obj_align(_grid, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_size(_grid, SCREEN_W, SCREEN_H - DASH_STATUS_BAR_H - DASH_TICKER_H);
+    lv_obj_align(_grid, LV_ALIGN_TOP_MID, 0, DASH_STATUS_BAR_H);
     lv_obj_set_style_bg_color(_grid, CLR_BG, 0);
     lv_obj_set_style_border_width(_grid, 0, 0);
     lv_obj_set_style_pad_all(_grid, 4, 0);
@@ -153,6 +220,16 @@ void DashboardScreen::buildTile(lv_obj_t *parent, const HAEntity &entity, int id
         lv_obj_set_style_border_color(tile, hasWarning ? CLR_ERR : CLR_ACCENT, 0);
         lv_obj_set_style_border_width(tile, hasWarning ? 3 : 2, 0);
     }
+    if (entity.domain == "climate") {
+        String action = entity.climateHvacAction;
+        action.toLowerCase();
+        lv_color_t clColor = CLR_BORDER;
+        if (action == "heating") clColor = CLR_WARN;
+        else if (action == "cooling") clColor = CLR_ACCENT;
+        else if (action.indexOf("fan") >= 0) clColor = CLR_OK;
+        lv_obj_set_style_border_color(tile, clColor, 0);
+        lv_obj_set_style_border_width(tile, 2, 0);
+    }
 
     if (entity.isControllable || entity.domain == "weather") {
         lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
@@ -203,8 +280,15 @@ void DashboardScreen::buildTile(lv_obj_t *parent, const HAEntity &entity, int id
         lv_obj_set_style_text_color(name, isUnavailable ? CLR_TEXT_DIM : CLR_TEXT, 0);
         lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
         lv_obj_set_width(name, tileW - 16);
+        lv_obj_set_height(name, lv_font_get_line_height(FONT_SM) + 2);
         lv_label_set_text(name, entity.friendlyName.c_str());
-        lv_obj_align(name, LV_ALIGN_BOTTOM_LEFT, 0, hideStateText ? 0 : -14);
+        if (entity.domain == "climate" && !hideStateText) {
+            // Pin climate name high to keep clear separation from temp/humidity text.
+            lv_obj_align(name, LV_ALIGN_TOP_LEFT, 0, 18);
+        } else {
+            int nameYOffset = hideStateText ? 0 : -14;
+            lv_obj_align(name, LV_ALIGN_BOTTOM_LEFT, 0, nameYOffset);
+        }
     }
 
     // ── State value ──────────────────────────────────────────────────────────
@@ -219,6 +303,15 @@ void DashboardScreen::buildTile(lv_obj_t *parent, const HAEntity &entity, int id
             if (!entity.weatherHumidity.isEmpty()) {
                 if (!stats.isEmpty()) stats += "\n";
                 stats += entity.weatherHumidity;
+            }
+            if (stats.isEmpty()) stats = entity.state;
+            lv_label_set_text(stateLbl, stats.c_str());
+        } else if (entity.domain == "climate") {
+            String stats;
+            if (!entity.climateCurrentTemp.isEmpty()) stats += entity.climateCurrentTemp;
+            if (!entity.climateHumidity.isEmpty()) {
+                if (!stats.isEmpty()) stats += "\n";
+                stats += entity.climateHumidity;
             }
             if (stats.isEmpty()) stats = entity.state;
             lv_label_set_text(stateLbl, stats.c_str());
@@ -238,7 +331,9 @@ void DashboardScreen::buildTile(lv_obj_t *parent, const HAEntity &entity, int id
 // ─────────────────────────────────────────────────────────────────────────────
 void DashboardScreen::populate(const std::vector<HAEntity> &entities, bool clearPending) {
     if (!_grid) return;
+    loadHiddenEntities();
     if (clearPending) clearPendingEntities();
+    _visibleEntityIndices.clear();
     lv_coord_t scrollY = lv_obj_get_scroll_y(_grid);
     lv_obj_clean(_grid);
 
@@ -250,16 +345,27 @@ void DashboardScreen::populate(const std::vector<HAEntity> &entities, bool clear
         return;
     }
 
-    int idx = 0;
+    int sourceIdx = 0;
     for (const auto &e : entities) {
-        buildTile(_grid, e, idx++);
+        if (isEntityHidden(e.entityId)) {
+            sourceIdx++;
+            continue;
+        }
+
+        int visibleIdx = static_cast<int>(_visibleEntityIndices.size());
+        _visibleEntityIndices.push_back(static_cast<size_t>(sourceIdx));
+        buildTile(_grid, e, visibleIdx);
+        sourceIdx++;
     }
 
     lv_obj_scroll_to_y(_grid, scrollY, LV_ANIM_OFF);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-void DashboardScreen::updateStatusBar(bool haConnected, int32_t rssi) {
+void DashboardScreen::updateStatusBar(bool haConnected, int32_t rssi,
+                                      bool batteryValid,
+                                      uint8_t batteryPercent,
+                                      bool batteryCharging) {
     if (_lblWifi) {
         int bars = 0;
         if (rssi > -55) bars = 4;
@@ -282,21 +388,164 @@ void DashboardScreen::updateStatusBar(bool haConnected, int32_t rssi) {
         lv_label_set_text(_lblHA, LV_SYMBOL_SETTINGS);
         lv_obj_set_style_text_color(_lblHA, haConnected ? CLR_OK : CLR_ERR, 0);
     }
+    if (_lblBattery) {
+        if (!batteryValid) {
+            lv_label_set_text(_lblBattery, "");
+        } else {
+            const char *icon = LV_SYMBOL_BATTERY_EMPTY;
+            lv_color_t color = CLR_ERR;
+
+            if (batteryPercent >= 90) {
+                icon = LV_SYMBOL_BATTERY_FULL;
+                color = CLR_OK;
+            } else if (batteryPercent >= 65) {
+                icon = LV_SYMBOL_BATTERY_3;
+                color = CLR_ACCENT;
+            } else if (batteryPercent >= 40) {
+                icon = LV_SYMBOL_BATTERY_2;
+                color = CLR_WARN;
+            } else if (batteryPercent >= 15) {
+                icon = LV_SYMBOL_BATTERY_1;
+                color = CLR_WARN;
+            }
+
+            if (batteryCharging) {
+                lv_label_set_text_fmt(_lblBattery, "%s%s", LV_SYMBOL_CHARGE, icon);
+                color = CLR_OK;
+            } else {
+                lv_label_set_text(_lblBattery, icon);
+            }
+
+            lv_obj_set_style_text_color(_lblBattery, color, 0);
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 void DashboardScreen::update() {
     if (!_screen) return;
+    if (!_lblTicker || _tickerQueue.empty()) return;
+
+    uint32_t now = millis();
+    if (!_tickerCollapsed && (now - _lastTickerMessageMs >= DASH_TICKER_COLLAPSE_MS)) {
+        _tickerCollapsed = true;
+        lv_label_set_long_mode(_lblTicker, LV_LABEL_LONG_CLIP);
+        lv_label_set_text_fmt(_lblTicker, "%s %u", LV_SYMBOL_BELL,
+                              static_cast<unsigned>(_tickerQueue.size()));
+        lv_obj_set_style_text_color(_lblTicker, CLR_ACCENT, 0);
+        return;
+    }
+
+    if (_tickerCollapsed) return;
+    if (now - _lastTickerStepMs < 4500) return;
+
+    _tickerIndex = (_tickerIndex + 1) % _tickerQueue.size();
+    lv_label_set_text(_lblTicker, _tickerQueue[_tickerIndex].c_str());
+    _lastTickerStepMs = now;
+}
+
+void DashboardScreen::queueTickerMessage(const String &message) {
+    if (!_lblTicker) return;
+
+    String text = message;
+    text.trim();
+    if (text.isEmpty()) return;
+    if (!_tickerQueue.empty() && _tickerQueue.back() == text) return;
+
+    uint32_t now = millis();
+    _tickerQueue.push_back(text);
+    if (_tickerQueue.size() > 8) {
+        _tickerQueue.erase(_tickerQueue.begin());
+        if (_tickerIndex > 0) _tickerIndex--;
+    }
+
+    _tickerCollapsed = false;
+    _tickerIndex = _tickerQueue.size() - 1;
+    lv_label_set_long_mode(_lblTicker, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_style_text_color(_lblTicker, CLR_TEXT_DIM, 0);
+    lv_label_set_text(_lblTicker, _tickerQueue[_tickerIndex].c_str());
+
+    _lastTickerStepMs = now;
+    _lastTickerMessageMs = now;
+}
+
+void DashboardScreen::openTickerLogPopup() {
+    closeTickerLogPopup();
+
+    _tickerLogPopup = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(_tickerLogPopup, SCREEN_W - 20, SCREEN_H - 24);
+    lv_obj_center(_tickerLogPopup);
+    lv_obj_set_style_bg_color(_tickerLogPopup, CLR_SURFACE, 0);
+    lv_obj_set_style_border_color(_tickerLogPopup, CLR_ACCENT, 0);
+    lv_obj_set_style_border_width(_tickerLogPopup, 1, 0);
+    lv_obj_set_style_radius(_tickerLogPopup, 10, 0);
+    lv_obj_set_style_pad_all(_tickerLogPopup, 8, 0);
+
+    lv_obj_t *title = lv_label_create(_tickerLogPopup);
+    lv_obj_set_style_text_font(title, FONT_MD, 0);
+    lv_label_set_text(title, LV_SYMBOL_BELL "  Notifications");
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t *list = lv_obj_create(_tickerLogPopup);
+    lv_obj_set_size(list, SCREEN_W - 40, SCREEN_H - 92);
+    lv_obj_align_to(list, title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+    lv_obj_set_style_bg_color(list, CLR_SURFACE2, 0);
+    lv_obj_set_style_border_color(list, CLR_TEXT_MUTED, 0);
+    lv_obj_set_style_border_width(list, 1, 0);
+    lv_obj_set_style_radius(list, 6, 0);
+    lv_obj_set_style_pad_all(list, 6, 0);
+    lv_obj_set_style_pad_gap(list, 6, 0);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    if (_tickerQueue.empty()) {
+        lv_obj_t *empty = lv_label_create(list);
+        lv_obj_add_style(empty, &Theme::style_label_dim, 0);
+        lv_label_set_text(empty, "No notifications yet.");
+    } else {
+        for (int i = static_cast<int>(_tickerQueue.size()) - 1; i >= 0; --i) {
+            lv_obj_t *entry = lv_label_create(list);
+            lv_obj_add_style(entry, &Theme::style_label_dim, 0);
+            lv_obj_set_width(entry, SCREEN_W - 58);
+            lv_label_set_long_mode(entry, LV_LABEL_LONG_WRAP);
+            lv_label_set_text_fmt(entry, "%s %s", LV_SYMBOL_BELL, _tickerQueue[static_cast<size_t>(i)].c_str());
+        }
+    }
+
+    lv_obj_t *closeBtn = lv_btn_create(_tickerLogPopup);
+    Theme::applyBtnGhost(closeBtn);
+    lv_obj_set_size(closeBtn, 88, 30);
+    lv_obj_align(closeBtn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_add_event_cb(closeBtn, onCloseTickerLogBtn, LV_EVENT_CLICKED, this);
+    lv_obj_t *closeLbl = lv_label_create(closeBtn);
+    lv_label_set_text(closeLbl, "Close");
+    lv_obj_center(closeLbl);
+}
+
+void DashboardScreen::closeTickerLogPopup() {
+    if (_tickerLogPopup) {
+        lv_obj_del(_tickerLogPopup);
+    }
+    _tickerLogPopup = nullptr;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 void DashboardScreen::destroy() {
+    closeTickerLogPopup();
     closeWifiInfoPopup();
     closeWeatherPopup();
+    closeClimatePopup();
     closeLightPopup();
     clearPendingEntities();
+    _visibleEntityIndices.clear();
+    _tickerQueue.clear();
+    _tickerIndex = 0;
+    _tickerCollapsed = false;
     _screen = nullptr;
-    _statusBar = _grid = _lblWifi = _lblHA = nullptr;
+    _climatePopup = nullptr;
+    _statusBar = _tickerBar = _grid = _lblWifi = _lblBattery = _lblHA = _lblTicker = _tickerLogPopup = nullptr;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -304,7 +553,9 @@ void DashboardScreen::onTileTap(lv_event_t *e) {
     DashboardScreen &self = DashboardScreen::instance();
     if (millis() < self._suppressTileTapUntilMs) return;
 
-    size_t index = static_cast<size_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
+    size_t visibleIndex = static_cast<size_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
+    if (visibleIndex >= self._visibleEntityIndices.size()) return;
+    size_t index = self._visibleEntityIndices[visibleIndex];
     const auto &entities = HAClient::instance().entities();
     if (index >= entities.size()) return;
 
@@ -312,6 +563,10 @@ void DashboardScreen::onTileTap(lv_event_t *e) {
 
     if (en.domain == "weather") {
         DashboardScreen::instance().openWeatherPopup();
+        return;
+    }
+    if (en.domain == "climate") {
+        DashboardScreen::instance().openClimatePopup(en);
         return;
     }
 
@@ -364,13 +619,16 @@ void DashboardScreen::onWifiLongPress(lv_event_t *e) {
 }
 
 void DashboardScreen::onTileLongPress(lv_event_t *e) {
-    size_t index = static_cast<size_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
+    DashboardScreen &self = DashboardScreen::instance();
+    size_t visibleIndex = static_cast<size_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
+    if (visibleIndex >= self._visibleEntityIndices.size()) return;
+    size_t index = self._visibleEntityIndices[visibleIndex];
     const auto &entities = HAClient::instance().entities();
     if (index >= entities.size()) return;
 
     const auto &en = entities[index];
     if (en.domain != "light") return;
-    DashboardScreen::instance().openLightPopup(en);
+    self.openLightPopup(en);
 }
 
 void DashboardScreen::openLightPopup(const HAEntity &entity) {
@@ -402,6 +660,15 @@ void DashboardScreen::openLightPopup(const HAEntity &entity) {
     lv_obj_set_style_text_font(title, FONT_MD, 0);
     lv_label_set_text_fmt(title, LV_SYMBOL_TINT "  %s", entity.friendlyName.c_str());
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t *hideBtn = lv_btn_create(_lightPopup);
+    Theme::applyBtnGhost(hideBtn);
+    lv_obj_set_size(hideBtn, 60, 26);
+    lv_obj_align(hideBtn, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_add_event_cb(hideBtn, onHideLightBtn, LV_EVENT_CLICKED, this);
+    lv_obj_t *hideLbl = lv_label_create(hideBtn);
+    lv_label_set_text(hideLbl, "Hide");
+    lv_obj_center(hideLbl);
 
     _lblMode = lv_label_create(_lightPopup);
     lv_obj_add_style(_lblMode, &Theme::style_label_dim, 0);
@@ -555,6 +822,65 @@ void DashboardScreen::closeWeatherPopup() {
         lv_obj_del(_weatherPopup);
     }
     _weatherPopup = nullptr;
+}
+
+void DashboardScreen::openClimatePopup(const HAEntity &entity) {
+    closeClimatePopup();
+    _selectedClimateId = entity.entityId;
+
+    _climatePopup = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(_climatePopup, SCREEN_W - 20, SCREEN_H - 80);
+    lv_obj_center(_climatePopup);
+    lv_obj_set_style_bg_color(_climatePopup, CLR_SURFACE, 0);
+    lv_obj_set_style_border_color(_climatePopup, CLR_ACCENT, 0);
+    lv_obj_set_style_border_width(_climatePopup, 1, 0);
+    lv_obj_set_style_radius(_climatePopup, 10, 0);
+    lv_obj_set_style_pad_all(_climatePopup, 8, 0);
+
+    lv_obj_t *title = lv_label_create(_climatePopup);
+    lv_obj_set_style_text_font(title, FONT_MD, 0);
+    lv_label_set_text_fmt(title, LV_SYMBOL_LOOP "  %s", entity.friendlyName.c_str());
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t *details = lv_label_create(_climatePopup);
+    lv_obj_set_style_text_font(details, FONT_SM, 0);
+    lv_obj_set_style_text_color(details, CLR_TEXT, 0);
+    lv_label_set_long_mode(details, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(details, SCREEN_W - 44);
+
+    String lines;
+    if (!entity.state.isEmpty()) {
+        String mode = entity.state;
+        if (mode.length() > 0) mode[0] = toupper(mode[0]);
+        lines += "Mode: " + mode + "\n";
+    }
+    if (!entity.climateHvacAction.isEmpty()) {
+        String action = entity.climateHvacAction;
+        if (action.length() > 0) action[0] = toupper(action[0]);
+        lines += "Action: " + action + "\n";
+    }
+    if (!entity.climateCurrentTemp.isEmpty()) lines += "Current Temp: " + entity.climateCurrentTemp + "\n";
+    if (!entity.climateHumidity.isEmpty()) lines += "Humidity: " + entity.climateHumidity + "\n";
+    if (!entity.climateSetpoint.isEmpty()) lines += "Setpoint: " + entity.climateSetpoint;
+    if (lines.isEmpty()) lines = "No climate data.";
+
+    lv_label_set_text(details, lines.c_str());
+    lv_obj_align_to(details, title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+
+    lv_obj_t *closeBtn = lv_btn_create(_climatePopup);
+    Theme::applyBtnGhost(closeBtn);
+    lv_obj_set_size(closeBtn, 88, 30);
+    lv_obj_align(closeBtn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_add_event_cb(closeBtn, onCloseClimateBtn, LV_EVENT_CLICKED, this);
+    lv_obj_t *closeLbl = lv_label_create(closeBtn);
+    lv_label_set_text(closeLbl, "Close");
+    lv_obj_center(closeLbl);
+}
+
+void DashboardScreen::closeClimatePopup() {
+    if (_climatePopup) lv_obj_del(_climatePopup);
+    _climatePopup = nullptr;
+    _selectedClimateId = "";
 }
 
 void DashboardScreen::openWifiInfoPopup() {
@@ -738,16 +1064,44 @@ void DashboardScreen::onCancelBtn(lv_event_t *e) {
     self->closeLightPopup();
 }
 
+void DashboardScreen::onHideLightBtn(lv_event_t *e) {
+    DashboardScreen *self = static_cast<DashboardScreen*>(lv_event_get_user_data(e));
+    if (!self || self->_selectedLightId.isEmpty()) return;
+
+    self->hideEntity(self->_selectedLightId);
+    self->closeLightPopup();
+    self->populate(HAClient::instance().entities(), false);
+}
+
 void DashboardScreen::onCloseWeatherBtn(lv_event_t *e) {
     DashboardScreen *self = static_cast<DashboardScreen*>(lv_event_get_user_data(e));
     if (!self) return;
     self->closeWeatherPopup();
 }
 
+void DashboardScreen::onCloseClimateBtn(lv_event_t *e) {
+    DashboardScreen *self = static_cast<DashboardScreen*>(lv_event_get_user_data(e));
+    if (!self) return;
+    self->closeClimatePopup();
+}
+
 void DashboardScreen::onCloseWifiBtn(lv_event_t *e) {
     DashboardScreen *self = static_cast<DashboardScreen*>(lv_event_get_user_data(e));
     if (!self) return;
     self->closeWifiInfoPopup();
+}
+
+void DashboardScreen::onTickerTap(lv_event_t *e) {
+    DashboardScreen *self = static_cast<DashboardScreen*>(lv_event_get_user_data(e));
+    if (!self) return;
+    self->_suppressTileTapUntilMs = millis() + 250;
+    self->openTickerLogPopup();
+}
+
+void DashboardScreen::onCloseTickerLogBtn(lv_event_t *e) {
+    DashboardScreen *self = static_cast<DashboardScreen*>(lv_event_get_user_data(e));
+    if (!self) return;
+    self->closeTickerLogPopup();
 }
 
 void DashboardScreen::onBrightnessChanged(lv_event_t *e) {

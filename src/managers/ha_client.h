@@ -26,6 +26,10 @@ struct HAEntity {
     String weatherCondition;
     String weatherTemp;
     String weatherHumidity;
+    String climateCurrentTemp;
+    String climateHumidity;
+    String climateSetpoint;
+    String climateHvacAction;
 };
 
 struct HAWeatherData {

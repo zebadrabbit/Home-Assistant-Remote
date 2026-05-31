@@ -145,6 +145,59 @@ void StorageManager::setEntityFilterMode(uint8_t mode) {
     prefs.end();
 }
 
+uint32_t StorageManager::getIdleTimeoutMs() const {
+    Preferences prefs;
+    prefs.begin(NVS_NAMESPACE, true);
+    uint32_t v = prefs.getUInt(NVS_KEY_IDLE, DEFAULT_IDLE_TIMEOUT_MS);
+    prefs.end();
+
+    switch (v) {
+        case 0:
+        case 30000:
+        case 60000:
+        case 300000:
+        case 600000:
+            return v;
+        default:
+            return DEFAULT_IDLE_TIMEOUT_MS;
+    }
+}
+
+void StorageManager::setIdleTimeoutMs(uint32_t timeoutMs) {
+    uint32_t value = timeoutMs;
+    switch (timeoutMs) {
+        case 0:
+        case 30000:
+        case 60000:
+        case 300000:
+        case 600000:
+            break;
+        default:
+            value = DEFAULT_IDLE_TIMEOUT_MS;
+            break;
+    }
+
+    Preferences prefs;
+    prefs.begin(NVS_NAMESPACE, false);
+    prefs.putUInt(NVS_KEY_IDLE, value);
+    prefs.end();
+}
+
+String StorageManager::getHiddenEntityIds() const {
+    Preferences prefs;
+    prefs.begin(NVS_NAMESPACE, true);
+    String v = prefs.getString(NVS_KEY_HIDDEN, "");
+    prefs.end();
+    return v;
+}
+
+void StorageManager::setHiddenEntityIds(const String &ids) {
+    Preferences prefs;
+    prefs.begin(NVS_NAMESPACE, false);
+    prefs.putString(NVS_KEY_HIDDEN, ids);
+    prefs.end();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 bool StorageManager::isFullyConfigured() const {
     return hasWiFi() && hasHA();

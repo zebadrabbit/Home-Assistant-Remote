@@ -58,25 +58,13 @@
 /*===================
    LOG
  *===================*/
-#define LV_USE_LOG 1
-#if LV_USE_LOG
-    #define LV_LOG_LEVEL            LV_LOG_LEVEL_WARN
-    #define LV_LOG_PRINTF           1
-    #define LV_LOG_TRACE_MEM        0
-    #define LV_LOG_TRACE_TIMER      0
-    #define LV_LOG_TRACE_INDEV      0
-    #define LV_LOG_TRACE_DISP_REFR  0
-    #define LV_LOG_TRACE_EVENT      0
-    #define LV_LOG_TRACE_OBJ_CREATE 0
-    #define LV_LOG_TRACE_LAYOUT     0
-    #define LV_LOG_TRACE_ANIM       0
-#endif
+#define LV_USE_LOG 0  /* disabled to reduce flash */
 
 /*=================
    ASSERTS
  *=================*/
-#define LV_USE_ASSERT_NULL          1
-#define LV_USE_ASSERT_MALLOC        1
+#define LV_USE_ASSERT_NULL          0  /* disabled to reduce flash */
+#define LV_USE_ASSERT_MALLOC        0  /* disabled to reduce flash */
 #define LV_USE_ASSERT_STYLE         0
 #define LV_USE_ASSERT_MEM_INTEGRITY 0
 #define LV_USE_ASSERT_OBJ           0
@@ -143,14 +131,14 @@
 #define LV_USE_BTN          1
 #define LV_USE_BTNMATRIX    1
 #define LV_USE_CANVAS       0
-#define LV_USE_CHECKBOX     1
+#define LV_USE_CHECKBOX     0  /* unused */
 #define LV_USE_DROPDOWN     1
 #define LV_USE_IMG          1
 #define LV_USE_LABEL        1
 #define LV_USE_LINE         1
-#define LV_USE_ROLLER       1
+#define LV_USE_ROLLER       0  /* unused */
 #define LV_USE_SLIDER       1
-#define LV_USE_SWITCH       1
+#define LV_USE_SWITCH       0  /* unused */
 #define LV_USE_TEXTAREA     1
 #define LV_USE_TABLE        0
 
@@ -163,11 +151,11 @@
 #define LV_USE_COLORWHEEL 1
 #define LV_USE_IMGBTN     0
 #define LV_USE_KEYBOARD   1
-#define LV_USE_LED        1
+#define LV_USE_LED        0  /* unused */
 #define LV_USE_LIST       1
 #define LV_USE_MENU       0
 #define LV_USE_METER      0
-#define LV_USE_MSGBOX     1
+#define LV_USE_MSGBOX     0  /* unused */
 #define LV_USE_SPAN       0
 #define LV_USE_SPINBOX    0
 #define LV_USE_SPINNER    1
@@ -191,7 +179,7 @@
    LAYOUT
  *==================*/
 #define LV_USE_FLEX 1
-#define LV_USE_GRID 1
+#define LV_USE_GRID 0  /* unused — flex only */
 
 /*==================
    GPU

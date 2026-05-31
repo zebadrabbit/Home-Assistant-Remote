@@ -6,6 +6,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "config.h"
+#include "managers/ha_client.h"
 
 /**
  * App — singleton that owns:
@@ -78,18 +79,35 @@ private:
     static void dispFlush(lv_disp_drv_t *drv, const lv_area_t *area,
                           lv_color_t *color_p);
     static void touchRead(lv_indev_drv_t *drv, lv_indev_data_t *data);
+    static void idleLogoBounceTick(lv_timer_t *timer);
     bool onTouchActivity();
+    void updateBatteryStatus();
     void updateIdleMode();
+    void updateIdleLogoPosition();
     void enableIdleMode();
     void disableIdleMode();
 
     // ── Dashboard polling ────────────────────────────────────────────────────
     uint32_t _lastEntityPollMs = 0;
     uint32_t _entityPollIntervalMs = DEFAULT_REFRESH_INTERVAL_MS;
+    std::vector<HAEntity> _lastEntitiesForTicker;
+    uint32_t _idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
     uint32_t _settingsOpenedMs = 0;
     uint32_t _lastTouchActivityMs = 0;
+    uint32_t _lastBatterySampleMs = 0;
     bool _idleModeActive = false;
+    bool _batteryValid = false;
+    bool _batteryCharging = false;
+    uint8_t _batteryPercent = 0;
     lv_obj_t *_idleOverlay = nullptr;
+    lv_obj_t *_idleLogo = nullptr;
+    lv_obj_t *_idleLogoText = nullptr;
+    lv_obj_t *_idleLogoTextShadow = nullptr;
+    lv_timer_t *_idleAnimTimer = nullptr;
+    int16_t _idleLogoX = 0;
+    int16_t _idleLogoY = 0;
+    int16_t _idleLogoVx = 2;
+    int16_t _idleLogoVy = 2;
 
     // ── Async HA entity fetch ────────────────────────────────────────────────
     volatile bool _haFetchInProgress = false;

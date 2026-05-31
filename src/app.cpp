@@ -14,6 +14,70 @@
 #include <SD.h>
 #include <esp_timer.h>
 
+static const HAEntity* findEntityById(const std::vector<HAEntity> &entities,
+                                      const String &entityId) {
+    for (const auto &entity : entities) {
+        if (entity.entityId == entityId) return &entity;
+    }
+    return nullptr;
+}
+
+static String compactStateWithUnit(const HAEntity &entity) {
+    if (entity.unit.isEmpty()) return entity.state;
+    return entity.state + " " + entity.unit;
+}
+
+static bool shouldTrackTickerDomain(const String &domain) {
+    return (domain == "light" || domain == "switch" || domain == "input_boolean" ||
+            domain == "media_player" || domain == "climate" || domain == "cover" ||
+            domain == "lock" || domain == "automation");
+}
+
+static uint8_t buildTickerNotifications(const std::vector<HAEntity> &before,
+                                        const std::vector<HAEntity> &after) {
+    uint8_t queued = 0;
+    const uint8_t kMaxPerPoll = 4;
+
+    for (const auto &next : after) {
+        if (queued >= kMaxPerPoll) break;
+        if (!shouldTrackTickerDomain(next.domain)) continue;
+
+        const HAEntity *prev = findEntityById(before, next.entityId);
+        if (!prev) continue;
+
+        bool changed = false;
+        String message;
+
+        if (prev->state != next.state) {
+            if (next.state == "on") {
+                message = next.friendlyName + " turned on";
+            } else if (next.state == "off") {
+                message = next.friendlyName + " turned off";
+            } else {
+                message = next.friendlyName + " changed: " +
+                          compactStateWithUnit(*prev) + " to " +
+                          compactStateWithUnit(next);
+            }
+            changed = true;
+        }
+
+        if (!changed && next.domain == "light" && prev->hasBrightness && next.hasBrightness &&
+            prev->brightnessPct != next.brightnessPct) {
+            message = next.friendlyName + " changed Brightness: " +
+                      String(prev->brightnessPct) + "% to " +
+                      String(next.brightnessPct) + "%";
+            changed = true;
+        }
+
+        if (changed) {
+            DashboardScreen::instance().queueTickerMessage(message);
+            queued++;
+        }
+    }
+
+    return queued;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Hardware objects (global so callbacks can reach them)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -164,30 +228,145 @@ bool App::onTouchActivity() {
     return false;
 }
 
+void App::updateBatteryStatus() {
+    if (BATTERY_ADC_PIN < 0) {
+        _batteryValid = false;
+        return;
+    }
+
+    if (millis() - _lastBatterySampleMs < BATTERY_SAMPLE_INTERVAL_MS) {
+        return;
+    }
+    _lastBatterySampleMs = millis();
+
+    uint32_t sum = 0;
+    constexpr uint8_t samples = 8;
+    for (uint8_t i = 0; i < samples; i++) {
+        sum += analogRead(BATTERY_ADC_PIN);
+    }
+
+    float raw = static_cast<float>(sum) / static_cast<float>(samples);
+    float measuredV = (raw / 4095.0f) * 3.3f;
+    float batteryV = measuredV * BATTERY_ADC_DIVIDER_RATIO;
+
+    float pct = ((batteryV - BATTERY_VOLTAGE_MIN) /
+                 (BATTERY_VOLTAGE_MAX - BATTERY_VOLTAGE_MIN)) * 100.0f;
+    pct = constrain(pct, 0.0f, 100.0f);
+
+    _batteryPercent = static_cast<uint8_t>(pct + 0.5f);
+    _batteryValid = true;
+
+    if (BATTERY_CHARGE_PIN >= 0) {
+        int level = digitalRead(BATTERY_CHARGE_PIN);
+        _batteryCharging = BATTERY_CHARGE_ACTIVE_LOW ? (level == LOW) : (level == HIGH);
+    } else {
+        _batteryCharging = false;
+    }
+}
+
+void App::idleLogoBounceTick(lv_timer_t *timer) {
+    if (!timer) return;
+    App *app = static_cast<App*>(timer->user_data);
+    if (!app || !app->_idleModeActive) return;
+    app->updateIdleLogoPosition();
+}
+
+void App::updateIdleLogoPosition() {
+    if (!_idleOverlay || !_idleLogo) return;
+
+    lv_coord_t logoW = lv_obj_get_width(_idleLogo);
+    lv_coord_t logoH = lv_obj_get_height(_idleLogo);
+
+    lv_coord_t maxX = SCREEN_W - logoW;
+    lv_coord_t maxY = SCREEN_H - logoH;
+
+    if (maxX < 0) maxX = 0;
+    if (maxY < 0) maxY = 0;
+
+    _idleLogoX += _idleLogoVx;
+    _idleLogoY += _idleLogoVy;
+
+    if (_idleLogoX <= 0) {
+        _idleLogoX = 0;
+        _idleLogoVx = abs(_idleLogoVx);
+    } else if (_idleLogoX >= maxX) {
+        _idleLogoX = maxX;
+        _idleLogoVx = -abs(_idleLogoVx);
+    }
+
+    if (_idleLogoY <= 0) {
+        _idleLogoY = 0;
+        _idleLogoVy = abs(_idleLogoVy);
+    } else if (_idleLogoY >= maxY) {
+        _idleLogoY = maxY;
+        _idleLogoVy = -abs(_idleLogoVy);
+    }
+
+    lv_obj_set_pos(_idleLogo, _idleLogoX, _idleLogoY);
+}
+
 void App::enableIdleMode() {
     if (_idleModeActive) return;
 
     _idleOverlay = lv_obj_create(lv_layer_top());
     lv_obj_set_size(_idleOverlay, SCREEN_W, SCREEN_H);
     lv_obj_set_style_bg_color(_idleOverlay, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(_idleOverlay, LV_OPA_80, 0);
+    lv_obj_set_style_bg_opa(_idleOverlay, LV_OPA_90, 0);
     lv_obj_set_style_border_width(_idleOverlay, 0, 0);
     lv_obj_set_style_radius(_idleOverlay, 0, 0);
     lv_obj_set_style_pad_all(_idleOverlay, 0, 0);
 
-    lv_obj_t *hint = lv_label_create(_idleOverlay);
-    lv_obj_add_style(hint, &Theme::style_label_dim, 0);
-    lv_label_set_text(hint, "Tap to wake");
-    lv_obj_center(hint);
+    _idleLogo = lv_obj_create(_idleOverlay);
+    lv_obj_set_style_bg_opa(_idleLogo, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(_idleLogo, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_set_style_border_width(_idleLogo, 2, 0);
+    lv_obj_set_style_border_opa(_idleLogo, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(_idleLogo, 12, 0);
+    lv_obj_set_style_pad_hor(_idleLogo, 10, 0);
+    lv_obj_set_style_pad_ver(_idleLogo, 4, 0);
+    lv_obj_set_style_shadow_width(_idleLogo, 0, 0);
+
+    _idleLogoTextShadow = lv_label_create(_idleLogo);
+    lv_label_set_text(_idleLogoTextShadow, "DVD");
+    lv_obj_set_style_text_font(_idleLogoTextShadow, FONT_TITLE, 0);
+    lv_obj_set_style_text_color(_idleLogoTextShadow, lv_palette_darken(LV_PALETTE_RED, 1), 0);
+    lv_obj_align(_idleLogoTextShadow, LV_ALIGN_CENTER, 1, 0);
+
+    _idleLogoText = lv_label_create(_idleLogo);
+    lv_label_set_text(_idleLogoText, "DVD");
+    lv_obj_set_style_text_font(_idleLogoText, FONT_TITLE, 0);
+    lv_obj_set_style_text_color(_idleLogoText, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_align(_idleLogoText, LV_ALIGN_CENTER, 0, 0);
+
+    lv_obj_update_layout(_idleLogo);
+    lv_coord_t textW = lv_obj_get_width(_idleLogoText);
+    lv_coord_t textH = lv_obj_get_height(_idleLogoText);
+    lv_obj_set_size(_idleLogo, textW + 20, textH + 12);
+
+    lv_obj_update_layout(_idleOverlay);
+    _idleLogoX = (SCREEN_W - lv_obj_get_width(_idleLogo)) / 2;
+    _idleLogoY = (SCREEN_H - lv_obj_get_height(_idleLogo)) / 2;
+    _idleLogoVx = 2;
+    _idleLogoVy = 2;
+    lv_obj_set_pos(_idleLogo, _idleLogoX, _idleLogoY);
+
+    _idleAnimTimer = lv_timer_create(idleLogoBounceTick, 20, this);
 
     _idleModeActive = true;
 }
 
 void App::disableIdleMode() {
+    if (_idleAnimTimer) {
+        lv_timer_del(_idleAnimTimer);
+        _idleAnimTimer = nullptr;
+    }
     if (_idleOverlay) {
         lv_obj_del(_idleOverlay);
         _idleOverlay = nullptr;
     }
+    _idleLogoText = nullptr;
+    _idleLogoTextShadow = nullptr;
+    _idleLogo = nullptr;
     _idleModeActive = false;
 }
 
@@ -197,8 +376,13 @@ void App::updateIdleMode() {
         return;
     }
 
+    if (_idleTimeoutMs == 0) {
+        disableIdleMode();
+        return;
+    }
+
     if (_idleModeActive) return;
-    if (millis() - _lastTouchActivityMs >= SCREEN_IDLE_TIMEOUT_MS) {
+    if (millis() - _lastTouchActivityMs >= _idleTimeoutMs) {
         enableIdleMode();
     }
 }
@@ -246,8 +430,16 @@ void App::init() {
     Serial.begin(115200);
     probeSdCard();
 
+    if (BATTERY_ADC_PIN >= 0) {
+        pinMode(BATTERY_ADC_PIN, INPUT);
+    }
+    if (BATTERY_CHARGE_PIN >= 0) {
+        pinMode(BATTERY_CHARGE_PIN, INPUT_PULLUP);
+    }
+
     StorageManager::instance().begin();
     _entityPollIntervalMs = StorageManager::instance().getRefreshIntervalMs();
+    _idleTimeoutMs = StorageManager::instance().getIdleTimeoutMs();
     HAClient::instance().setEntityFilterMode(StorageManager::instance().getEntityFilterMode());
     initDisplay();
     initTouch();
@@ -322,15 +514,24 @@ void App::loop() {
         case AppState::DASHBOARD: {
             DashboardScreen::instance().update();
             updateIdleMode();
+            updateBatteryStatus();
+
+            DashboardScreen::instance().updateStatusBar(
+                true, WiFiMgr::instance().rssi(),
+                _batteryValid, _batteryPercent, _batteryCharging);
 
             // Periodic entity refresh
             if (millis() - _lastEntityPollMs >= _entityPollIntervalMs) {
                 _lastEntityPollMs = millis();
                 if (HAClient::instance().fetchEntities()) {
+                    const auto &latestEntities = HAClient::instance().entities();
+                    buildTickerNotifications(_lastEntitiesForTicker, latestEntities);
+                    _lastEntitiesForTicker = latestEntities;
                     DashboardScreen::instance().populate(
-                        HAClient::instance().entities());
+                        latestEntities);
                     DashboardScreen::instance().updateStatusBar(
-                        true, WiFiMgr::instance().rssi());
+                        true, WiFiMgr::instance().rssi(),
+                        _batteryValid, _batteryPercent, _batteryCharging);
                 }
             }
             break;
@@ -587,8 +788,12 @@ void App::enterDashboard() {
         _wifiSetupCanCancelToDashboard = true;
         requestTransition(AppState::WIFI_SETUP);
     });
-    DashboardScreen::instance().populate(HAClient::instance().entities());
-    DashboardScreen::instance().updateStatusBar(true, WiFiMgr::instance().rssi());
+    updateBatteryStatus();
+    _lastEntitiesForTicker = HAClient::instance().entities();
+    DashboardScreen::instance().populate(_lastEntitiesForTicker);
+    DashboardScreen::instance().updateStatusBar(
+        true, WiFiMgr::instance().rssi(),
+        _batteryValid, _batteryPercent, _batteryCharging);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -597,6 +802,7 @@ void App::enterSettings() {
 
     auto &storage = StorageManager::instance();
     uint32_t refreshMs = storage.getRefreshIntervalMs();
+    uint32_t idleTimeoutMs = storage.getIdleTimeoutMs();
     uint8_t filterMode = storage.getEntityFilterMode();
     uint8_t rotation = storage.getDisplayRotation();
     uint8_t theme = storage.getThemePreset();
@@ -610,13 +816,25 @@ void App::enterSettings() {
         }
     }
 
+    static const uint32_t idleOptionsMs[] = {30000, 60000, 300000, 600000, 0};
+    uint8_t idleIndex = 2;
+    for (uint8_t i = 0; i < 5; i++) {
+        if (idleTimeoutMs == idleOptionsMs[i]) {
+            idleIndex = i;
+            break;
+        }
+    }
+
     struct SettingsUiCtx {
         App *app;
         lv_obj_t *overlay;
         lv_obj_t *ddRotation;
         lv_obj_t *ddTheme;
         lv_obj_t *ddRefresh;
+        lv_obj_t *ddIdle;
         lv_obj_t *ddFilter;
+        lv_obj_t *ddHidden;
+        lv_obj_t *lblHiddenInfo;
     };
 
     lv_obj_t *overlay = lv_obj_create(lv_scr_act());
@@ -696,6 +914,14 @@ void App::enterSettings() {
     lv_dropdown_set_selected(ddRefresh, refreshIndex);
     lv_obj_set_width(ddRefresh, 180);
 
+    lv_obj_t *idleLbl = lv_label_create(dashSec);
+    lv_obj_add_style(idleLbl, &Theme::style_label_dim, 0);
+    lv_label_set_text(idleLbl, "Screensaver Timeout");
+    lv_obj_t *ddIdle = lv_dropdown_create(dashSec);
+    lv_dropdown_set_options(ddIdle, "30 sec\n1 min\n5 min\n10 min\nOff");
+    lv_dropdown_set_selected(ddIdle, idleIndex);
+    lv_obj_set_width(ddIdle, 180);
+
     lv_obj_t *filterLbl = lv_label_create(dashSec);
     lv_obj_add_style(filterLbl, &Theme::style_label_dim, 0);
     lv_label_set_text(filterLbl, "Entity Filter");
@@ -703,6 +929,68 @@ void App::enterSettings() {
     lv_dropdown_set_options(ddFilter, "Lights + Outlets\nLights only");
     lv_dropdown_set_selected(ddFilter, filterMode == 1 ? 1 : 0);
     lv_obj_set_width(ddFilter, 180);
+
+    lv_obj_t *hiddenSec = makeSection("Hidden Items");
+    lv_obj_t *hiddenInfo = lv_label_create(hiddenSec);
+    lv_obj_add_style(hiddenInfo, &Theme::style_label_dim, 0);
+    lv_label_set_text(hiddenInfo, "0 hidden");
+
+    lv_obj_t *ddHidden = lv_dropdown_create(hiddenSec);
+    lv_obj_set_width(ddHidden, SCREEN_W - 56);
+
+    auto refreshHiddenUi = [&](SettingsUiCtx *ctx) {
+        String packed = StorageManager::instance().getHiddenEntityIds();
+        String options;
+        uint16_t count = 0;
+
+        int start = 0;
+        while (start < packed.length()) {
+            int sep = packed.indexOf('\n', start);
+            if (sep < 0) sep = packed.length();
+            String token = packed.substring(start, sep);
+            token.trim();
+            if (!token.isEmpty()) {
+                if (!options.isEmpty()) options += "\n";
+                options += token;
+                count++;
+            }
+            start = sep + 1;
+        }
+
+        if (options.isEmpty()) {
+            options = "None";
+            lv_obj_add_state(ctx->ddHidden, LV_STATE_DISABLED);
+        } else {
+            lv_obj_clear_state(ctx->ddHidden, LV_STATE_DISABLED);
+        }
+
+        lv_dropdown_set_options(ctx->ddHidden, options.c_str());
+        lv_dropdown_set_selected(ctx->ddHidden, 0);
+        lv_label_set_text_fmt(ctx->lblHiddenInfo, "%u hidden", static_cast<unsigned>(count));
+    };
+
+    lv_obj_t *hiddenRow = lv_obj_create(hiddenSec);
+    lv_obj_set_width(hiddenRow, lv_pct(100));
+    lv_obj_set_height(hiddenRow, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(hiddenRow, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(hiddenRow, 0, 0);
+    lv_obj_set_style_pad_all(hiddenRow, 0, 0);
+    lv_obj_set_style_pad_gap(hiddenRow, 8, 0);
+    lv_obj_set_flex_flow(hiddenRow, LV_FLEX_FLOW_ROW_WRAP);
+
+    lv_obj_t *unhideBtn = lv_btn_create(hiddenRow);
+    Theme::applyBtnGhost(unhideBtn);
+    lv_obj_set_size(unhideBtn, 118, 32);
+    lv_obj_t *unhideLbl = lv_label_create(unhideBtn);
+    lv_label_set_text(unhideLbl, "Unhide");
+    lv_obj_center(unhideLbl);
+
+    lv_obj_t *unhideAllBtn = lv_btn_create(hiddenRow);
+    Theme::applyBtnGhost(unhideAllBtn);
+    lv_obj_set_size(unhideAllBtn, 118, 32);
+    lv_obj_t *unhideAllLbl = lv_label_create(unhideAllBtn);
+    lv_label_set_text(unhideAllLbl, "Unhide All");
+    lv_obj_center(unhideAllLbl);
 
     lv_obj_t *connSec = makeSection("Connections");
     lv_obj_t *connRow = lv_obj_create(connSec);
@@ -752,7 +1040,8 @@ void App::enterSettings() {
     lv_label_set_text(saveLbl, "Save");
     lv_obj_center(saveLbl);
 
-    auto *ctx = new SettingsUiCtx{this, overlay, ddRotation, ddTheme, ddRefresh, ddFilter};
+    auto *ctx = new SettingsUiCtx{this, overlay, ddRotation, ddTheme, ddRefresh, ddIdle, ddFilter, ddHidden, hiddenInfo};
+    refreshHiddenUi(ctx);
 
     lv_obj_add_event_cb(saveBtn, [](lv_event_t *e) {
         SettingsUiCtx *ctx = static_cast<SettingsUiCtx*>(lv_event_get_user_data(e));
@@ -762,11 +1051,15 @@ void App::enterSettings() {
         uint8_t newRotation = static_cast<uint8_t>(lv_dropdown_get_selected(ctx->ddRotation));
         uint8_t newTheme = static_cast<uint8_t>(lv_dropdown_get_selected(ctx->ddTheme));
         uint8_t refreshIdx = static_cast<uint8_t>(lv_dropdown_get_selected(ctx->ddRefresh));
+        uint8_t idleIdx = static_cast<uint8_t>(lv_dropdown_get_selected(ctx->ddIdle));
         uint8_t filterIdx = static_cast<uint8_t>(lv_dropdown_get_selected(ctx->ddFilter));
         if (refreshIdx > 4) refreshIdx = 1;
+        if (idleIdx > 4) idleIdx = 2;
 
         static const uint32_t refreshValues[] = {5000, 10000, 15000, 30000, 60000};
+        static const uint32_t idleValues[] = {30000, 60000, 300000, 600000, 0};
         uint32_t newRefreshMs = refreshValues[refreshIdx];
+        uint32_t newIdleMs = idleValues[idleIdx];
         uint8_t newFilter = (filterIdx == 1) ? 1 : 0;
 
         uint8_t oldRotation = storage.getDisplayRotation();
@@ -775,14 +1068,21 @@ void App::enterSettings() {
         storage.setDisplayRotation(newRotation);
         storage.setThemePreset(newTheme);
         storage.setRefreshIntervalMs(newRefreshMs);
+        storage.setIdleTimeoutMs(newIdleMs);
         storage.setEntityFilterMode(newFilter);
 
         ctx->app->_entityPollIntervalMs = newRefreshMs;
+        ctx->app->_idleTimeoutMs = newIdleMs;
         ctx->app->_lastEntityPollMs = millis();
+        ctx->app->_lastTouchActivityMs = millis();
+        ctx->app->disableIdleMode();
         HAClient::instance().setEntityFilterMode(newFilter);
         if (HAClient::instance().fetchEntities()) {
             DashboardScreen::instance().populate(HAClient::instance().entities());
-            DashboardScreen::instance().updateStatusBar(true, WiFiMgr::instance().rssi());
+            ctx->app->updateBatteryStatus();
+            DashboardScreen::instance().updateStatusBar(
+                true, WiFiMgr::instance().rssi(),
+                ctx->app->_batteryValid, ctx->app->_batteryPercent, ctx->app->_batteryCharging);
         }
 
         bool needsRestart = (newRotation != oldRotation) || (newTheme != oldTheme);
@@ -798,6 +1098,86 @@ void App::enterSettings() {
         if (!ctx || millis() - ctx->app->_settingsOpenedMs < 300) return;
         lv_obj_del(ctx->overlay);
         delete ctx;
+    }, LV_EVENT_CLICKED, ctx);
+
+    lv_obj_add_event_cb(unhideBtn, [](lv_event_t *e) {
+        SettingsUiCtx *ctx = static_cast<SettingsUiCtx*>(lv_event_get_user_data(e));
+        if (!ctx || millis() - ctx->app->_settingsOpenedMs < 300) return;
+
+        char selected[96] = {0};
+        lv_dropdown_get_selected_str(ctx->ddHidden, selected, sizeof(selected));
+        String selectedId = String(selected);
+        selectedId.trim();
+        if (selectedId.isEmpty() || selectedId == "None") return;
+
+        String packed = StorageManager::instance().getHiddenEntityIds();
+        String rebuilt;
+
+        int start = 0;
+        while (start < packed.length()) {
+            int sep = packed.indexOf('\n', start);
+            if (sep < 0) sep = packed.length();
+            String token = packed.substring(start, sep);
+            token.trim();
+            if (!token.isEmpty() && token != selectedId) {
+                if (!rebuilt.isEmpty()) rebuilt += "\n";
+                rebuilt += token;
+            }
+            start = sep + 1;
+        }
+
+        StorageManager::instance().setHiddenEntityIds(rebuilt);
+        if (HAClient::instance().fetchEntities()) {
+            DashboardScreen::instance().populate(HAClient::instance().entities());
+            ctx->app->updateBatteryStatus();
+            DashboardScreen::instance().updateStatusBar(
+                true, WiFiMgr::instance().rssi(),
+                ctx->app->_batteryValid, ctx->app->_batteryPercent, ctx->app->_batteryCharging);
+        }
+
+        String options;
+        uint16_t count = 0;
+        start = 0;
+        while (start < rebuilt.length()) {
+            int sep = rebuilt.indexOf('\n', start);
+            if (sep < 0) sep = rebuilt.length();
+            String token = rebuilt.substring(start, sep);
+            token.trim();
+            if (!token.isEmpty()) {
+                if (!options.isEmpty()) options += "\n";
+                options += token;
+                count++;
+            }
+            start = sep + 1;
+        }
+        if (options.isEmpty()) {
+            options = "None";
+            lv_obj_add_state(ctx->ddHidden, LV_STATE_DISABLED);
+        } else {
+            lv_obj_clear_state(ctx->ddHidden, LV_STATE_DISABLED);
+        }
+        lv_dropdown_set_options(ctx->ddHidden, options.c_str());
+        lv_dropdown_set_selected(ctx->ddHidden, 0);
+        lv_label_set_text_fmt(ctx->lblHiddenInfo, "%u hidden", static_cast<unsigned>(count));
+    }, LV_EVENT_CLICKED, ctx);
+
+    lv_obj_add_event_cb(unhideAllBtn, [](lv_event_t *e) {
+        SettingsUiCtx *ctx = static_cast<SettingsUiCtx*>(lv_event_get_user_data(e));
+        if (!ctx || millis() - ctx->app->_settingsOpenedMs < 300) return;
+
+        StorageManager::instance().setHiddenEntityIds("");
+        if (HAClient::instance().fetchEntities()) {
+            DashboardScreen::instance().populate(HAClient::instance().entities());
+            ctx->app->updateBatteryStatus();
+            DashboardScreen::instance().updateStatusBar(
+                true, WiFiMgr::instance().rssi(),
+                ctx->app->_batteryValid, ctx->app->_batteryPercent, ctx->app->_batteryCharging);
+        }
+
+        lv_dropdown_set_options(ctx->ddHidden, "None");
+        lv_dropdown_set_selected(ctx->ddHidden, 0);
+        lv_obj_add_state(ctx->ddHidden, LV_STATE_DISABLED);
+        lv_label_set_text(ctx->lblHiddenInfo, "0 hidden");
     }, LV_EVENT_CLICKED, ctx);
 
     lv_obj_add_event_cb(wifiBtn, [](lv_event_t *e) {

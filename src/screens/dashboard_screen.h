@@ -34,8 +34,14 @@ public:
     /** Rebuild the tile grid from the current HAClient entity list. */
     void populate(const std::vector<HAEntity> &entities, bool clearPending = true);
 
-    /** Update the status bar WiFi RSSI and HA connection indicator. */
-    void updateStatusBar(bool haConnected, int32_t rssi);
+    /** Update the status bar WiFi, battery, and HA indicators. */
+    void updateStatusBar(bool haConnected, int32_t rssi,
+                         bool batteryValid = false,
+                         uint8_t batteryPercent = 0,
+                         bool batteryCharging = false);
+
+    /** Queue a ticker message in the bottom notification strip. */
+    void queueTickerMessage(const String &message);
 
     /** Called every loop to drive polling timer. */
     void update();
@@ -46,10 +52,15 @@ private:
     lv_obj_t *_screen     = nullptr;
     lv_obj_t *_statusBar  = nullptr;
     lv_obj_t *_lblWifi    = nullptr;
+    lv_obj_t *_lblBattery = nullptr;
     lv_obj_t *_lblHA      = nullptr;
+    lv_obj_t *_tickerBar  = nullptr;
+    lv_obj_t *_lblTicker  = nullptr;
+    lv_obj_t *_tickerLogPopup = nullptr;
     lv_obj_t *_grid       = nullptr;   // scrollable container for tiles
     lv_obj_t *_lightPopup = nullptr;
     lv_obj_t *_weatherPopup = nullptr;
+    lv_obj_t *_climatePopup = nullptr;
     lv_obj_t *_wifiPopup = nullptr;
     lv_obj_t *_sliderBrightness = nullptr;
     lv_obj_t *_sliderKelvin = nullptr;
@@ -61,6 +72,7 @@ private:
     lv_obj_t *_btnModeWhite = nullptr;
 
     String _selectedLightId;
+    String _selectedClimateId;
     uint8_t _selectedR = 255;
     uint8_t _selectedG = 255;
     uint8_t _selectedB = 255;
@@ -73,6 +85,13 @@ private:
     bool _lightPrefUseKelvin = false;
     uint32_t _suppressTileTapUntilMs = 0;
     std::vector<String> _pendingEntityIds;
+    std::vector<String> _hiddenEntityIds;
+    std::vector<size_t> _visibleEntityIndices;
+    std::vector<String> _tickerQueue;
+    size_t _tickerIndex = 0;
+    uint32_t _lastTickerStepMs = 0;
+    uint32_t _lastTickerMessageMs = 0;
+    bool _tickerCollapsed = false;
 
     std::function<void()> _onSettings;
     std::function<void()> _onWifiReconfigure;
@@ -84,12 +103,20 @@ private:
     bool isEntityPending(const String &entityId) const;
     void markEntityPending(const String &entityId);
     void clearPendingEntities();
+    bool isEntityHidden(const String &entityId) const;
+    void loadHiddenEntities();
+    void saveHiddenEntities() const;
+    void hideEntity(const String &entityId);
     void openLightPopup(const HAEntity &entity);
     void closeLightPopup();
     void openWeatherPopup();
     void closeWeatherPopup();
+    void openClimatePopup(const HAEntity &entity);
+    void closeClimatePopup();
     void openWifiInfoPopup();
     void closeWifiInfoPopup();
+    void openTickerLogPopup();
+    void closeTickerLogPopup();
     void applyLightPopup();
     void updateLightPopupModeUi();
 
@@ -102,10 +129,14 @@ private:
     static void onWifiLongPress(lv_event_t *e);
     static void onColorModeBtn(lv_event_t *e);
     static void onWhiteModeBtn(lv_event_t *e);
+    static void onHideLightBtn(lv_event_t *e);
     static void onApplyBtn(lv_event_t *e);
     static void onCancelBtn(lv_event_t *e);
     static void onCloseWeatherBtn(lv_event_t *e);
+    static void onCloseClimateBtn(lv_event_t *e);
     static void onCloseWifiBtn(lv_event_t *e);
+    static void onTickerTap(lv_event_t *e);
+    static void onCloseTickerLogBtn(lv_event_t *e);
     static void onBrightnessChanged(lv_event_t *e);
     static void onKelvinChanged(lv_event_t *e);
     static void onColorWheelChanged(lv_event_t *e);

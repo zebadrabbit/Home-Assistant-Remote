@@ -5,7 +5,7 @@
 
 // Domains displayed on the dashboard
 static const char* SUPPORTED_DOMAINS[] = {
-    "switch", "light"
+    "switch", "light", "climate"
 };
 static const size_t SUPPORTED_DOMAIN_COUNT =
     sizeof(SUPPORTED_DOMAINS) / sizeof(SUPPORTED_DOMAINS[0]);
@@ -58,7 +58,7 @@ String HAClient::buildUrl(const String &path) const {
 
 bool HAClient::isSupportedDomain(const String &domain) const {
     if (_entityFilterMode == 0) {
-        return (domain == "switch" || domain == "light");
+        return (domain == "switch" || domain == "light" || domain == "climate");
     }
 
     if (_entityFilterMode == 1) {
@@ -132,6 +132,9 @@ bool HAClient::fetchEntities() {
     filter[0]["attributes"]["wind_bearing"]         = true;
     filter[0]["attributes"]["apparent_temperature"] = true;
     filter[0]["attributes"]["dew_point"]            = true;
+    filter[0]["attributes"]["current_temperature"]  = true;
+    filter[0]["attributes"]["current_humidity"]     = true;
+    filter[0]["attributes"]["hvac_action"]          = true;
 
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, *stream,
@@ -298,6 +301,16 @@ bool HAClient::fetchEntities() {
                     e.colorB = static_cast<uint8_t>(constrain(b, 0, 255));
                 }
             }
+        }
+
+        if (domain == "climate") {
+            JsonVariant ct = attrs["current_temperature"];
+            if (!ct.isNull()) e.climateCurrentTemp = String(ct.as<float>(), 1);
+            JsonVariant ch = attrs["current_humidity"];
+            if (!ch.isNull()) e.climateHumidity = String(ch.as<float>(), 0) + "%";
+            JsonVariant sp = attrs["temperature"];
+            if (!sp.isNull()) e.climateSetpoint = String(sp.as<float>(), 1);
+            e.climateHvacAction = attrs["hvac_action"] | "";
         }
 
         if (isHelperEntity(e.entityId, e.friendlyName)) continue;

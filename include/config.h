@@ -42,6 +42,17 @@
 // ─── Light sensor ────────────────────────────────────────────────────────────
 #define PIN_LDR         34
 
+// ─── Battery monitor (CYD) ──────────────────────────────────────────────────
+// Set BATTERY_ADC_PIN to -1 to disable battery measurement.
+// If your battery divider ratio differs, adjust BATTERY_ADC_DIVIDER_RATIO.
+#define BATTERY_ADC_PIN             34
+#define BATTERY_CHARGE_PIN          -1   // optional: charger status pin, -1 disables
+#define BATTERY_CHARGE_ACTIVE_LOW   true
+#define BATTERY_ADC_DIVIDER_RATIO   2.0f
+#define BATTERY_VOLTAGE_MIN         3.30f
+#define BATTERY_VOLTAGE_MAX         4.20f
+#define BATTERY_SAMPLE_INTERVAL_MS  2000
+
 // ─── NVS storage ─────────────────────────────────────────────────────────────
 #define NVS_NAMESPACE   "ha_remote"
 #define NVS_KEY_SSID    "wifi_ssid"
@@ -52,6 +63,8 @@
 #define NVS_KEY_THEME   "theme"
 #define NVS_KEY_REFRESH "refresh_ms"
 #define NVS_KEY_FILTER  "entity_filter"
+#define NVS_KEY_IDLE    "idle_ms"
+#define NVS_KEY_HIDDEN  "hidden_ids"
 
 // ─── Timings ─────────────────────────────────────────────────────────────────
 #define SPLASH_DURATION_MS      2500
@@ -64,6 +77,7 @@
 #define DEFAULT_THEME_PRESET        0   // dark
 #define DEFAULT_ENTITY_FILTER_MODE  0   // lights + switches
 #define DEFAULT_REFRESH_INTERVAL_MS  10000
+#define DEFAULT_IDLE_TIMEOUT_MS      300000
 
 // ─── Home Assistant ──────────────────────────────────────────────────────────
 #define HA_DEFAULT_PORT         8123
@@ -76,3 +90,5 @@
 #define DASH_TILE_W             ((SCREEN_W) / (DASH_COLS))   // 106 px
 #define DASH_TILE_H             90
 #define DASH_STATUS_BAR_H       24
+#define DASH_TICKER_H           20
+#define DASH_TICKER_COLLAPSE_MS 60000

@@ -158,9 +158,27 @@ void App::initDisplay() {
     tft.setRotation(rotation % 4);
     tft.fillScreen(TFT_BLACK);
 
-    // Backlight on
-    pinMode(SCREEN_BL_PIN, OUTPUT);
-    digitalWrite(SCREEN_BL_PIN, HIGH);
+    initBacklight();
+}
+
+void App::initBacklight() {
+    ledcSetup(SCREEN_BL_PWM_CHANNEL, SCREEN_BL_PWM_FREQ_HZ, SCREEN_BL_PWM_RES_BITS);
+    ledcAttachPin(SCREEN_BL_PIN, SCREEN_BL_PWM_CHANNEL);
+    _backlightPercent = 255;
+    setBacklightPercent(100);
+}
+
+void App::setBacklightPercent(uint8_t percent) {
+    percent = static_cast<uint8_t>(constrain(static_cast<int>(percent), 0, 100));
+    if (_backlightPercent == percent) return;
+    _backlightPercent = percent;
+
+    const uint32_t maxDuty = (1UL << SCREEN_BL_PWM_RES_BITS) - 1UL;
+    uint32_t duty = (static_cast<uint32_t>(percent) * maxDuty) / 100UL;
+    if (!SCREEN_BL_ACTIVE_HIGH) {
+        duty = maxDuty - duty;
+    }
+    ledcWrite(SCREEN_BL_PWM_CHANNEL, duty);
 }
 
 void App::initTouch() {
@@ -353,6 +371,7 @@ void App::enableIdleMode() {
     _idleAnimTimer = lv_timer_create(idleLogoBounceTick, 20, this);
 
     _idleModeActive = true;
+    _idleModeStartedMs = millis();
 }
 
 void App::disableIdleMode() {
@@ -368,6 +387,8 @@ void App::disableIdleMode() {
     _idleLogoTextShadow = nullptr;
     _idleLogo = nullptr;
     _idleModeActive = false;
+    _idleModeStartedMs = 0;
+    setBacklightPercent(100);
 }
 
 void App::updateIdleMode() {
@@ -376,12 +397,24 @@ void App::updateIdleMode() {
         return;
     }
 
-    if (_idleTimeoutMs == 0) {
-        disableIdleMode();
+    if (_idleModeActive) {
+        uint32_t idleElapsed = millis() - _idleModeStartedMs;
+        if (idleElapsed >= (IDLE_BACKLIGHT_DIM_DELAY_MS + IDLE_BACKLIGHT_OFF_DELAY_MS)) {
+            setBacklightPercent(0);
+        } else if (idleElapsed >= IDLE_BACKLIGHT_DIM_DELAY_MS) {
+            setBacklightPercent(IDLE_BACKLIGHT_DIM_PERCENT);
+        } else {
+            setBacklightPercent(100);
+        }
         return;
     }
 
-    if (_idleModeActive) return;
+    setBacklightPercent(100);
+
+    if (_idleTimeoutMs == 0) {
+        return;
+    }
+
     if (millis() - _lastTouchActivityMs >= _idleTimeoutMs) {
         enableIdleMode();
     }

@@ -16,6 +16,7 @@ The format is based on Keep a Changelog and semantic-style categories.
 - Tapping the ticker opens a scrollable notifications popup with recent entries.
 - Climate entities are now shown on the dashboard with compact temp/humidity tile stats.
 - Climate detail popup shows mode, HVAC action, current temp, humidity, and setpoint.
+- PWM backlight control on the display backlight pin for percent-based brightness.
 
 ### Changed
 
@@ -26,6 +27,7 @@ The format is based on Keep a Changelog and semantic-style categories.
 - Long-press interaction handling improved to avoid accidental toggles.
 - Firmware size optimization applied via linker dead-code elimination and LVGL feature trimming.
 - Climate tile name behavior updated to single-line truncation and repositioned to avoid stat overlap.
+- Idle behavior now includes a staged backlight timeline after idle starts: 100% -> 10% after 5 minutes -> off after 30 more seconds.
 
 ### Fixed
 

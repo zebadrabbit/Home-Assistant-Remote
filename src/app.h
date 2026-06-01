@@ -73,6 +73,8 @@ private:
 
     // ── LVGL hardware bridge ─────────────────────────────────────────────────
     void initDisplay();
+    void initBacklight();
+    void setBacklightPercent(uint8_t percent);
     void initTouch();
     void initLVGL();
 
@@ -94,8 +96,10 @@ private:
     uint32_t _idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
     uint32_t _settingsOpenedMs = 0;
     uint32_t _lastTouchActivityMs = 0;
+    uint32_t _idleModeStartedMs = 0;
     uint32_t _lastBatterySampleMs = 0;
     bool _idleModeActive = false;
+    uint8_t _backlightPercent = 255;
     bool _batteryValid = false;
     bool _batteryCharging = false;
     uint8_t _batteryPercent = 0;

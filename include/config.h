@@ -9,6 +9,10 @@
 #define SCREEN_W        320
 #define SCREEN_H        240
 #define SCREEN_BL_PIN   21          // Backlight PWM pin
+#define SCREEN_BL_ACTIVE_HIGH true
+#define SCREEN_BL_PWM_CHANNEL 0
+#define SCREEN_BL_PWM_FREQ_HZ 5000
+#define SCREEN_BL_PWM_RES_BITS 8
 
 // ─── SD card (ELEGOO ESP32-32E documented pins) ───────────────────────────
 #define SD_SCK_PIN      18
@@ -78,6 +82,9 @@
 #define DEFAULT_ENTITY_FILTER_MODE  0   // lights + switches
 #define DEFAULT_REFRESH_INTERVAL_MS  10000
 #define DEFAULT_IDLE_TIMEOUT_MS      300000
+#define IDLE_BACKLIGHT_DIM_DELAY_MS  300000  // after idle starts: 5 min -> dim
+#define IDLE_BACKLIGHT_OFF_DELAY_MS  30000   // then 30 sec later -> off
+#define IDLE_BACKLIGHT_DIM_PERCENT   10
 
 // ─── Home Assistant ──────────────────────────────────────────────────────────
 #define HA_DEFAULT_PORT         8123
